@@ -42,7 +42,7 @@ final class SonosController: ObservableObject {
     private static let knownSpeakerKey = "sonosKnownSpeaker"
 
     /// Any reachable speaker's IP, good for fetching topology without another SSDP round.
-    private var knownSpeaker: String? {
+    private(set) var knownSpeaker: String? {
         didSet { UserDefaults.standard.set(knownSpeaker, forKey: Self.knownSpeakerKey) }
     }
     private var topologyRefreshedAt = Date.distantPast
@@ -365,7 +365,7 @@ final class SonosController: ObservableObject {
 
     // MARK: SOAP
 
-    private func soap(ip: String, service: String, path: String, action: String, body: String = "") async throws -> String {
+    func soap(ip: String, service: String, path: String, action: String, body: String = "") async throws -> String {
         var request = URLRequest(url: URL(string: "http://\(ip):1400\(path)")!)
         request.httpMethod = "POST"
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
@@ -489,19 +489,26 @@ final class SonosController: ObservableObject {
     }
 
     /// Text between `<tag>` and `</tag>`; the tags this needs never carry attributes.
-    private nonisolated static func text(_ tag: String, in xml: String) -> String? {
+    nonisolated static func text(_ tag: String, in xml: String) -> String? {
         guard let open = xml.range(of: "<\(tag)>"),
               let close = xml.range(of: "</\(tag)>", range: open.upperBound..<xml.endIndex)
         else { return nil }
         return String(xml[open.upperBound..<close.lowerBound])
     }
 
-    private nonisolated static func unescape(_ text: String) -> String {
+    nonisolated static func unescape(_ text: String) -> String {
         text.replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&apos;", with: "'")
             .replacingOccurrences(of: "&amp;", with: "&")
+    }
+
+    nonisolated static func escape(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
     }
 
     /// "0:03:11" → 191. Sonos reports NOT_IMPLEMENTED for inputs it can't time.

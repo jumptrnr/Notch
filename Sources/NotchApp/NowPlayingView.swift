@@ -4,11 +4,16 @@ struct NowPlayingView: View {
     @ObservedObject var media: MediaController
     @ObservedObject var lyrics: LyricsProvider
     @ObservedObject var sonos: SonosController
+    @ObservedObject var browser: MediaBrowser
     @Binding var showLyrics: Bool
     @Binding var showSpeakers: Bool
+    @Binding var showBrowser: Bool
 
     var body: some View {
-        if media.hasTrack {
+        if showBrowser, sonos.isEnabled {
+            BrowseView(browser: browser, sonos: sonos, close: closeBrowser)
+                .onAppear { browser.load() }
+        } else if media.hasTrack {
             VStack(spacing: 10) {
                 track
                 ProgressBar(media: media)
@@ -27,6 +32,29 @@ struct NowPlayingView: View {
             }
         } else {
             empty
+        }
+    }
+
+    private func closeBrowser() {
+        withAnimation(NotchState.toggle) { showBrowser = false }
+    }
+
+    /// Opens the Sonos library browser, to start something on a group from here. Rides above
+    /// the skip-back button; the empty state offers it as a plain button.
+    @ViewBuilder
+    private var browseToggle: some View {
+        if sonos.isEnabled {
+            Button {
+                withAnimation(NotchState.toggle) { showBrowser = true }
+            } label: {
+                Image(systemName: "music.note.list")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .frame(width: 22, height: 20)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Browse Sonos library")
         }
     }
 
@@ -120,6 +148,17 @@ struct NowPlayingView: View {
             Text("Nothing playing")
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.5))
+            if sonos.isEnabled {
+                Button("Browse Sonos…") {
+                    withAnimation(NotchState.toggle) { showBrowser = true }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.white.opacity(0.85))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.white.opacity(0.14)))
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 68)
     }
@@ -145,6 +184,9 @@ struct NowPlayingView: View {
     private var controls: some View {
         HStack(spacing: 14) {
             controlButton("backward.fill") { media.previous() }
+                .overlay(alignment: .top) {
+                    browseToggle.offset(y: Self.lyricsToggleRise)
+                }
             controlButton(media.isPlaying ? "pause.fill" : "play.fill", size: 18) { media.playPause() }
                 // Floated over the play button rather than stacked above it: a VStack would push
                 // play/pause down and leave it out of line with the two skip buttons.

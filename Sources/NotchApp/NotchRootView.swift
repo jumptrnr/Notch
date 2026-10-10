@@ -4,6 +4,7 @@ struct NotchRootView: View {
     @ObservedObject var state: NotchState
     @ObservedObject var media: MediaController
     @ObservedObject var sonos: SonosController
+    @ObservedObject var browser: MediaBrowser
     @ObservedObject var lyrics: LyricsProvider
     @ObservedObject var shelf: ShelfModel
     @ObservedObject var codes: CodeWatcher
@@ -83,7 +84,7 @@ struct NotchRootView: View {
             Group {
                 switch state.selectedTab {
                 case .nowPlaying:
-                    NowPlayingView(media: media, lyrics: lyrics, sonos: sonos, showLyrics: $state.showLyrics, showSpeakers: $state.showSpeakers)
+                    NowPlayingView(media: media, lyrics: lyrics, sonos: sonos, browser: browser, showLyrics: $state.showLyrics, showSpeakers: $state.showSpeakers, showBrowser: $state.showBrowser)
                 case .codes:
                     CodesView(watcher: codes, accounts: accounts, openSettings: openSettings)
                 case .shelf:

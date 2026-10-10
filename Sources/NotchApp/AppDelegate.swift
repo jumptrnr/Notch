@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Tabs only some users have. Each stays hidden until it is set up in Settings.
     private let plugins = PluginRegistry(plugins: [WindSenseiPlugin()])
     private lazy var media = MediaController(spotify: spotify, sonos: sonos)
+    private lazy var browser = MediaBrowser(sonos: sonos, spotify: spotify, media: media)
     private let lyrics = LyricsProvider()
     private let shelf = ShelfModel()
     private let accounts = MailAccountStore()
@@ -108,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             state: state,
             media: media,
             sonos: sonos,
+            browser: browser,
             lyrics: lyrics,
             shelf: shelf,
             codes: codes,

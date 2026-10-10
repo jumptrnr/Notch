@@ -22,7 +22,7 @@ final class SpotifyAuth: ObservableObject {
     private static let tokenFile = "spotify-refresh-token"
     nonisolated static let callbackPort: UInt16 = 47391
     nonisolated static let registeredRedirectURI = "http://127.0.0.1:\(callbackPort)/callback"
-    static let scopes = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
+    static let scopes = "user-read-playback-state user-modify-playback-state user-read-currently-playing playlist-read-private playlist-read-collaborative"
 
     @Published var clientID: String {
         didSet { UserDefaults.standard.set(clientID, forKey: Self.clientIDKey) }

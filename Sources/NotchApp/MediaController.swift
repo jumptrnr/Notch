@@ -277,6 +277,15 @@ final class MediaController: ObservableObject {
         if !wasPlaying { baseline = (position, Date()) }
     }
 
+    /// Re-reads every source once something started outside the controller (the browser
+    /// starting a Sonos group) has had a moment to show up.
+    func refreshSoon() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(800))
+            self?.refresh()
+        }
+    }
+
     /// Runs a network command, then re-reads once the player has had a moment to apply it.
     private func remoteCommand(_ operation: @escaping @MainActor () async throws -> Void) {
         Task { [weak self] in

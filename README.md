@@ -80,6 +80,15 @@ ticked. Each room in the group has a mute button, a volume slider and its level,
 slider at the top scales them all together, as in the Sonos app. Volume is read from the
 speakers only while the panel is open.
 
+**Starting music.** A list button sits above the skip-back button, and the "Nothing playing"
+state offers Browse Sonos. The browser lists My Sonos (everything starred in the Sonos app),
+Sonos playlists, and the connected Spotify account's playlists. Pick a group in the "Play on"
+picker and click an item; it loads into that group's queue and plays, exactly as the Sonos app
+would start it. Spotify playlists start through the Spotify account linked in the Sonos app, so
+they need neither Spotify Connect nor Premium; listing them does need the playlist scopes, which
+Notch asks for at connect time, so a Spotify connection made with an older build has to be redone
+in Settings for the Spotify section to appear.
+
 ## Plug-ins
 
 Tabs that only some users have live under `Sources/NotchApp/Plugins/`. A plug-in is one class
