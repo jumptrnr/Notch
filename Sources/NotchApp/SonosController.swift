@@ -50,6 +50,20 @@ final class SonosController: ObservableObject {
     /// The group currently shown in the notch; transport commands and grouping changes go here.
     @Published private(set) var activeGroup: SonosGroup?
 
+    /// Volume (0–100) and mute per room, keyed by room UUID, for the rooms in the shown group.
+    @Published private(set) var volumes: [String: Int] = [:]
+    @Published private(set) var muted: Set<String> = []
+    /// Sonos's own group volume, which scales every member together. Nil for a lone room.
+    @Published private(set) var groupVolume: Int?
+    /// Set by the speakers panel. Volume is read on each poll only while it is showing, since
+    /// that is three extra requests per room every two seconds.
+    var wantsVolumes = false
+    /// Rooms whose volume was just set here; polls leave them alone until the speaker has
+    /// applied the change, so a slider doesn't jump back under the cursor.
+    private var volumeHoldUntil: [String: Date] = [:]
+    private var inFlight: Set<String> = []
+    private var queued: [String: @MainActor () async throws -> Void] = [:]
+
     /// Every visible room on the network, for the speakers menu.
     var rooms: [SonosRoom] {
         groups.flatMap(\.members).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
@@ -162,6 +176,7 @@ final class SonosController: ObservableObject {
             return nil
         }
         activeGroup = chosen.0
+        if wantsVolumes { await refreshVolumes() }
         return chosen.1
     }
 
@@ -232,6 +247,102 @@ final class SonosController: ObservableObject {
             // Sonos takes a beat to publish the new topology.
             try? await Task.sleep(for: .milliseconds(500))
             if let knownSpeaker { await refreshTopology(from: knownSpeaker) }
+        }
+    }
+
+    // MARK: Volume
+
+    private static let renderingPath = "/MediaRenderer/RenderingControl/Control"
+    private static let groupRenderingPath = "/MediaRenderer/GroupRenderingControl/Control"
+    private static let groupVolumeKey = "group"
+
+    /// Reads volume and mute for every room in the shown group, and the group volume when there
+    /// is more than one. Rooms with a change still settling are skipped.
+    func refreshVolumes() async {
+        guard let activeGroup else { return }
+        let members = activeMembers
+        let now = Date()
+        await withTaskGroup(of: (String, Int?, Bool?).self) { tasks in
+            for room in members {
+                tasks.addTask { [self] in
+                    async let volumeXML = soap(ip: room.ip, service: "RenderingControl", path: Self.renderingPath, action: "GetVolume", body: "<InstanceID>0</InstanceID><Channel>Master</Channel>")
+                    async let muteXML = soap(ip: room.ip, service: "RenderingControl", path: Self.renderingPath, action: "GetMute", body: "<InstanceID>0</InstanceID><Channel>Master</Channel>")
+                    let volume = (try? await volumeXML).flatMap { Self.text("CurrentVolume", in: $0) }.flatMap { Int($0) }
+                    let mute = (try? await muteXML).flatMap { Self.text("CurrentMute", in: $0) }.map { $0 == "1" }
+                    return (room.uuid, volume, mute)
+                }
+            }
+            for await (uuid, volume, mute) in tasks {
+                if let hold = volumeHoldUntil[uuid], hold > now { continue }
+                if let volume { volumes[uuid] = volume }
+                if let mute {
+                    if mute { muted.insert(uuid) } else { muted.remove(uuid) }
+                }
+            }
+        }
+        guard members.count > 1 else {
+            groupVolume = nil
+            return
+        }
+        if let hold = volumeHoldUntil[Self.groupVolumeKey], hold > now { return }
+        let xml = try? await soap(ip: activeGroup.coordinatorIP, service: "GroupRenderingControl", path: Self.groupRenderingPath, action: "GetGroupVolume", body: "<InstanceID>0</InstanceID>")
+        groupVolume = xml.flatMap { Self.text("CurrentVolume", in: $0) }.flatMap { Int($0) }
+    }
+
+    func setVolume(_ room: SonosRoom, _ level: Int) {
+        let level = min(max(level, 0), 100)
+        volumes[room.uuid] = level
+        volumeHoldUntil[room.uuid] = Date().addingTimeInterval(1.5)
+        sendLatest(key: room.uuid) { [self] in
+            _ = try await soap(
+                ip: room.ip, service: "RenderingControl", path: Self.renderingPath, action: "SetVolume",
+                body: "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>\(level)</DesiredVolume>"
+            )
+        }
+    }
+
+    func setMuted(_ room: SonosRoom, _ isMuted: Bool) {
+        if isMuted { muted.insert(room.uuid) } else { muted.remove(room.uuid) }
+        volumeHoldUntil[room.uuid] = Date().addingTimeInterval(1.5)
+        sendLatest(key: "mute:" + room.uuid) { [self] in
+            _ = try await soap(
+                ip: room.ip, service: "RenderingControl", path: Self.renderingPath, action: "SetMute",
+                body: "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredMute>\(isMuted ? 1 : 0)</DesiredMute>"
+            )
+        }
+    }
+
+    /// Scales every room in the group together, the way the Sonos app's group slider does. The
+    /// per-room levels that result come back on the next poll.
+    func setGroupVolume(_ level: Int) {
+        guard let activeGroup else { return }
+        let level = min(max(level, 0), 100)
+        groupVolume = level
+        volumeHoldUntil[Self.groupVolumeKey] = Date().addingTimeInterval(1.5)
+        sendLatest(key: Self.groupVolumeKey) { [self] in
+            _ = try await soap(
+                ip: activeGroup.coordinatorIP, service: "GroupRenderingControl", path: Self.groupRenderingPath,
+                action: "SetGroupVolume", body: "<InstanceID>0</InstanceID><DesiredVolume>\(level)</DesiredVolume>"
+            )
+        }
+    }
+
+    /// A slider fires many times a second. Each key gets one request in flight at a time, with
+    /// only the newest value waiting behind it, so a drag ends on the level it was released at
+    /// without queueing every step along the way.
+    private func sendLatest(key: String, _ request: @escaping @MainActor () async throws -> Void) {
+        queued[key] = request
+        guard !inFlight.contains(key) else { return }
+        inFlight.insert(key)
+        Task {
+            while let next = queued.removeValue(forKey: key) {
+                do {
+                    try await next()
+                } catch {
+                    sonosLog.error("volume \(key, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            inFlight.remove(key)
         }
     }
 

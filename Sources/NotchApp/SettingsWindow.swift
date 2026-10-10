@@ -7,14 +7,14 @@ import SwiftUI
 final class SettingsWindow {
     private var window: NSWindow?
 
-    func show(spotify: SpotifyAuth, sonos: SonosController, accounts: MailAccountStore, watcher: CodeWatcher) {
+    func show(spotify: SpotifyAuth, sonos: SonosController, plugins: PluginRegistry, accounts: MailAccountStore, watcher: CodeWatcher) {
         if let window {
             present(window)
             return
         }
-        let view = SettingsView(spotify: spotify, sonos: sonos, accounts: accounts, watcher: watcher)
+        let view = SettingsView(spotify: spotify, sonos: sonos, plugins: plugins, accounts: accounts, watcher: watcher)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 820),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 960),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -35,10 +35,11 @@ final class SettingsWindow {
     }
 }
 
-/// Spotify and Sonos on top, mail accounts below.
+/// Spotify and Sonos on top, then each plug-in, mail accounts below.
 private struct SettingsView: View {
     @ObservedObject var spotify: SpotifyAuth
     @ObservedObject var sonos: SonosController
+    @ObservedObject var plugins: PluginRegistry
     @ObservedObject var accounts: MailAccountStore
     @ObservedObject var watcher: CodeWatcher
 
@@ -50,6 +51,13 @@ private struct SettingsView: View {
             SonosSettingsView(sonos: sonos)
                 .padding(18)
             Divider()
+            ForEach(plugins.plugins.map { $0.id }, id: \.self) { id in
+                if let plugin = plugins.plugin(id) {
+                    plugin.settingsView
+                        .padding(18)
+                    Divider()
+                }
+            }
             MailSettingsView(accounts: accounts, watcher: watcher)
         }
         .frame(width: 420)

@@ -73,9 +73,35 @@ has a Scan Again button. The Sonos source is off until you switch it on there.
 Home-theatre inputs and Spotify Connect sessions are skipped by this source, since Sonos exposes
 no track metadata for them over polling.
 
-**Grouping.** While a Sonos group is what's showing, a two-speaker button sits above the
-skip-forward button. It opens a checklist of every room. Ticking a room joins it to the playing
-group; unticking splits it off. The room doing the streaming stays ticked.
+**Speakers and volume.** While a Sonos group is what's showing, a two-speaker button sits above
+the skip-forward button. It opens a panel in the lyrics panel's slot listing every room. Ticking
+a room joins it to the playing group; unticking splits it off. The room doing the streaming stays
+ticked. Each room in the group has a mute button, a volume slider and its level, and a Group
+slider at the top scales them all together, as in the Sonos app. Volume is read from the
+speakers only while the panel is open.
+
+## Plug-ins
+
+Tabs that only some users have live under `Sources/NotchApp/Plugins/`. A plug-in is one class
+adopting `NotchPlugin`: it says whether it is configured, and supplies a settings section and a
+tab. Until it is set up in Settings its tab doesn't exist, so everyone else sees the same three
+tabs as before. To add one, write the class and append it to the list in `AppDelegate`.
+
+Plug-in tabs get the tall panel (the height the lyrics panel opens to). The notch tells each
+configured plug-in when it opens, which is the moment to refresh anything stale; nothing is
+fetched for a shut panel.
+
+### WindSensei
+
+Favourite kiting spots from a [WindSensei](https://windsensei.com) account, as its widgets show
+them: the nearest station's observed wind with its age, the next rideable block, and a bar per
+hour of today's session window coloured by the server's grade. Once today's window has passed
+the strip shows tomorrow's.
+
+Create an API key under Dashboard › Profile on windsensei.com, paste it into the WindSensei
+section of Settings, and a Wind tab appears. The key goes in an owner-only file next to the
+Spotify token and is sent as `X-API-Key` to the widget endpoint. Data refreshes every 15 minutes
+and when the notch opens on data older than five minutes. Wind is in knots.
 
 ## Lyrics
 

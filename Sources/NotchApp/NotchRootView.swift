@@ -8,6 +8,7 @@ struct NotchRootView: View {
     @ObservedObject var shelf: ShelfModel
     @ObservedObject var codes: CodeWatcher
     @ObservedObject var accounts: MailAccountStore
+    @ObservedObject var plugins: PluginRegistry
     let openSettings: () -> Void
 
     /// Read live from `SMAppService` each time the context menu opens, so the toggle stays
@@ -44,6 +45,15 @@ struct NotchRootView: View {
             }
         }
         .frame(width: state.windowSize.width, height: state.windowSize.height, alignment: .top)
+        .onChange(of: state.isOpen) { _, open in
+            if open { plugins.notchOpened() }
+        }
+        // A plug-in that was just disconnected takes its tab with it.
+        .onChange(of: plugins.activeIDs) { _, ids in
+            if case .plugin(let id) = state.selectedTab, !ids.contains(id) {
+                state.selectedTab = .nowPlaying
+            }
+        }
     }
 
     // Collapsed: a subtle live indicator when music is playing.
@@ -73,11 +83,15 @@ struct NotchRootView: View {
             Group {
                 switch state.selectedTab {
                 case .nowPlaying:
-                    NowPlayingView(media: media, lyrics: lyrics, sonos: sonos, showLyrics: $state.showLyrics)
+                    NowPlayingView(media: media, lyrics: lyrics, sonos: sonos, showLyrics: $state.showLyrics, showSpeakers: $state.showSpeakers)
                 case .codes:
                     CodesView(watcher: codes, accounts: accounts, openSettings: openSettings)
                 case .shelf:
                     ShelfView(shelf: shelf)
+                case .plugin(let id):
+                    if let plugin = plugins.plugin(id) {
+                        plugin.tabView
+                    }
                 }
             }
         }
@@ -93,6 +107,11 @@ struct NotchRootView: View {
             tab("Now Playing", .nowPlaying)
             tab("Codes", .codes, badge: codes.hasUnseenCode)
             tab("Shelf", .shelf)
+            ForEach(plugins.activeIDs, id: \.self) { id in
+                if let plugin = plugins.plugin(id) {
+                    tab(plugin.title, .plugin(id))
+                }
+            }
         }
         .frame(maxWidth: .infinity)
     }

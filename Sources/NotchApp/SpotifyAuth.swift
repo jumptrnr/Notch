@@ -9,7 +9,7 @@ let spotifyLog = Logger(subsystem: "com.robin.notch", category: "spotify")
 
 /// Spotify Web API sign-in: Authorization Code with PKCE, so there is no client secret to hide in
 /// the binary. The user registers their own app in the Spotify dashboard and pastes its Client ID.
-/// The refresh token lives in an owner-only file under Application Support (see `TokenFile`);
+/// The refresh token lives in an owner-only file under Application Support (see `SecretFile`);
 /// the short-lived access token only in memory.
 ///
 /// Spotify only accepts HTTPS or loopback redirect URIs, so the sign-in page opens in the default
@@ -19,6 +19,7 @@ let spotifyLog = Logger(subsystem: "com.robin.notch", category: "spotify")
 @MainActor
 final class SpotifyAuth: ObservableObject {
     /// What the user adds under "Redirect URIs" in the Spotify dashboard.
+    private static let tokenFile = "spotify-refresh-token"
     nonisolated static let callbackPort: UInt16 = 47391
     nonisolated static let registeredRedirectURI = "http://127.0.0.1:\(callbackPort)/callback"
     static let scopes = "user-read-playback-state user-modify-playback-state user-read-currently-playing"
@@ -40,7 +41,7 @@ final class SpotifyAuth: ObservableObject {
 
     init() {
         clientID = UserDefaults.standard.string(forKey: Self.clientIDKey) ?? ""
-        isConnected = TokenFile.read()?.isEmpty == false
+        isConnected = SecretFile.read(Self.tokenFile)?.isEmpty == false
         spotifyLog.notice("connected=\(self.isConnected ? "yes" : "no", privacy: .public)")
     }
 
@@ -130,7 +131,7 @@ final class SpotifyAuth: ObservableObject {
 
     func disconnect() {
         cancelConnect()
-        TokenFile.delete()
+        SecretFile.delete(Self.tokenFile)
         accessToken = nil
         accessTokenExpiry = .distantPast
         isConnected = false
@@ -148,7 +149,7 @@ final class SpotifyAuth: ObservableObject {
             return try await refreshTask.value
         }
         let task = Task<String, Error> {
-            guard let refresh = TokenFile.read(), !refresh.isEmpty else {
+            guard let refresh = SecretFile.read(Self.tokenFile), !refresh.isEmpty else {
                 throw SpotifyError.notConnected
             }
             do {
@@ -183,7 +184,7 @@ final class SpotifyAuth: ObservableObject {
         accessTokenExpiry = Date().addingTimeInterval(token.expiresIn)
         // PKCE refreshes rotate the refresh token; the old one stops working.
         if let refresh = token.refreshToken, !refresh.isEmpty {
-            TokenFile.write(refresh)
+            SecretFile.write(refresh, as: Self.tokenFile)
         }
     }
 
@@ -243,34 +244,6 @@ final class SpotifyAuth: ObservableObject {
 /// Where the refresh token lives. Not the Keychain: its legacy ACL re-prompts for the login
 /// password on every rebuilt binary, which for a side-loaded app means every update. An
 /// owner-only file is what the user's other processes could read anyway via that prompt.
-private enum TokenFile {
-    private static var url: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Notch", isDirectory: true).appendingPathComponent("spotify-refresh-token")
-    }
-
-    static func read() -> String? {
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    static func write(_ token: String) {
-        let directory = url.deletingLastPathComponent()
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
-            try Data(token.utf8).write(to: url, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-        } catch {
-            spotifyLog.error("couldn't save refresh token: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    static func delete() {
-        try? FileManager.default.removeItem(at: url)
-    }
-}
-
 enum SpotifyError: LocalizedError {
     case notConnected
     case invalidGrant

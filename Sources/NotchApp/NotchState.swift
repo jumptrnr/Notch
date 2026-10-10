@@ -4,6 +4,13 @@ enum NotchTab: Hashable {
     case nowPlaying
     case codes
     case shelf
+    /// A plug-in's tab, by the plug-in's id.
+    case plugin(String)
+
+    var isPlugin: Bool {
+        if case .plugin = self { return true }
+        return false
+    }
 }
 
 /// Shared geometry + open/closed state, read by both SwiftUI and the AppKit hosting view.
@@ -18,19 +25,23 @@ final class NotchState: ObservableObject {
     /// Whether the Now Playing tab has its lyrics panel out. Published because the open panel
     /// grows to make room for it, and `chromeRect` is what decides where clicks land.
     @Published var showLyrics = false
+    /// Whether the Sonos speakers panel is out instead. It takes the lyrics panel's slot, so the
+    /// two are never out together.
+    @Published var showSpeakers = false
 
     /// Size of the notch chrome when collapsed (matches the hardware notch when present).
     private(set) var closedSize: CGSize
     /// Size of the expanded panel with the lyrics panel stowed.
     private(set) var compactOpenSize: CGSize
-    /// How much taller the panel gets with lyrics showing.
+    /// How much taller the panel gets with the lyrics or speakers panel showing.
     private(set) var lyricsHeight: CGFloat
     /// Size of the host window (must contain the tallest open panel with margin).
     private(set) var windowSize: CGSize
 
-    /// Size of the expanded panel as it currently stands.
+    /// Size of the expanded panel as it currently stands. Plug-in tabs always get the tall
+    /// panel: a list of anything needs more than the compact height holds.
     var openSize: CGSize {
-        guard showLyrics else { return compactOpenSize }
+        guard showLyrics || showSpeakers || selectedTab.isPlugin else { return compactOpenSize }
         return CGSize(width: compactOpenSize.width, height: compactOpenSize.height + lyricsHeight)
     }
 

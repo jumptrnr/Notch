@@ -5,14 +5,24 @@ struct NowPlayingView: View {
     @ObservedObject var lyrics: LyricsProvider
     @ObservedObject var sonos: SonosController
     @Binding var showLyrics: Bool
+    @Binding var showSpeakers: Bool
 
     var body: some View {
         if media.hasTrack {
             VStack(spacing: 10) {
                 track
                 ProgressBar(media: media)
-                if showLyrics {
+                if showSpeakers, media.activeSource == .sonos {
+                    SpeakersView(sonos: sonos)
+                } else if showLyrics {
                     LyricsView(media: media, lyrics: lyrics)
+                }
+            }
+            // The panel only makes sense for Sonos; stow it if what's showing moves elsewhere,
+            // or the notch stays tall around nothing.
+            .onChange(of: media.activeSource) { _, source in
+                if source != .sonos, showSpeakers {
+                    withAnimation(NotchState.toggle) { showSpeakers = false }
                 }
             }
         } else {
@@ -60,7 +70,10 @@ struct NowPlayingView: View {
     /// panel uses to open and close.
     private var lyricsToggle: some View {
         Button {
-            withAnimation(NotchState.toggle) { showLyrics.toggle() }
+            withAnimation(NotchState.toggle) {
+                showLyrics.toggle()
+                if showLyrics { showSpeakers = false }
+            }
         } label: {
             noteIcon
                 .foregroundStyle(.white.opacity(showLyrics ? 1 : 0.45))
@@ -74,36 +87,29 @@ struct NowPlayingView: View {
         .help(showLyrics ? "Hide lyrics" : "Show lyrics")
     }
 
-    /// Which rooms play along, as a checklist. Only while a Sonos group is what's showing: the
-    /// Spotify and local sources have no say over Sonos grouping. Rides above the skip-forward
-    /// button the way the lyrics toggle rides above play.
+    /// Opens the speakers panel: which rooms play along, and each one's volume. Only while a
+    /// Sonos group is what's showing: the Spotify and local sources have no say over Sonos. Rides
+    /// above the skip-forward button the way the lyrics toggle rides above play.
     @ViewBuilder
-    private var speakersMenu: some View {
-        if media.activeSource == .sonos, sonos.rooms.count > 1 {
-            let grouped = sonos.activeMembers.count > 1
-            Menu {
-                ForEach(sonos.rooms) { room in
-                    Toggle(room.name, isOn: Binding(
-                        get: { sonos.activeMembers.contains { $0.uuid == room.uuid } },
-                        set: { sonos.setGrouped(room, $0) }
-                    ))
-                    .disabled(room.uuid == sonos.activeGroup?.coordinatorUUID)
+    private var speakersToggle: some View {
+        if media.activeSource == .sonos, !sonos.rooms.isEmpty {
+            Button {
+                withAnimation(NotchState.toggle) {
+                    showSpeakers.toggle()
+                    if showSpeakers { showLyrics = false }
                 }
             } label: {
                 Image(systemName: "hifispeaker.2.fill")
                     .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.white.opacity(grouped ? 1 : 0.45))
+                    .foregroundStyle(.white.opacity(showSpeakers ? 1 : 0.45))
                     .frame(width: 22, height: 20)
                     .background(
-                        Circle().fill(Color.white.opacity(grouped ? 0.18 : 0))
+                        Circle().fill(Color.white.opacity(showSpeakers ? 0.18 : 0))
                     )
                     .contentShape(Circle())
             }
-            .menuStyle(.button)
             .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Speakers")
+            .help(showSpeakers ? "Hide speakers" : "Speakers and volume")
         }
     }
 
@@ -147,7 +153,7 @@ struct NowPlayingView: View {
                 }
             controlButton("forward.fill") { media.next() }
                 .overlay(alignment: .top) {
-                    speakersMenu.offset(y: Self.lyricsToggleRise)
+                    speakersToggle.offset(y: Self.lyricsToggleRise)
                 }
         }
     }

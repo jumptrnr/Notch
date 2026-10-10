@@ -83,6 +83,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dragPasteboardCount = 0
     private let spotify = SpotifyAuth()
     private let sonos = SonosController()
+    /// Tabs only some users have. Each stays hidden until it is set up in Settings.
+    private let plugins = PluginRegistry(plugins: [WindSenseiPlugin()])
     private lazy var media = MediaController(spotify: spotify, sonos: sonos)
     private let lyrics = LyricsProvider()
     private let shelf = ShelfModel()
@@ -110,6 +112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             shelf: shelf,
             codes: codes,
             accounts: accounts,
+            plugins: plugins,
             openSettings: { [weak self] in self?.showSettings() }
         )
         let hostingView = PassthroughHostingView(rootView: rootView)
@@ -163,7 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSettings() {
-        settingsWindow.show(spotify: spotify, sonos: sonos, accounts: accounts, watcher: codes)
+        settingsWindow.show(spotify: spotify, sonos: sonos, plugins: plugins, accounts: accounts, watcher: codes)
     }
 
     // MARK: Pointer tracking
