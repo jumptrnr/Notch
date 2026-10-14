@@ -62,10 +62,21 @@ final class MediaController: ObservableObject {
     /// The Spotify app on this Mac is what's showing, so its music can be moved to the speakers.
     var isMacSpotify: Bool { activeSource == .local && activeApp == "Spotify" }
     private var spotifyFailures = 0
-    /// The account's player is read at most this often; every 2s was ~1,800 calls an hour and
-    /// got the app rate-limited. A command clears it so its result shows at once.
-    private static let spotifyPollInterval: TimeInterval = 5
+    /// The account's player is read at most this often: every 5s with the notch open, every 30s
+    /// closed, where only the playing indicator needs it. Every 2s around the clock was ~43,000
+    /// calls a day and got the app rate-limited for hours. A command or the notch opening
+    /// clears the wait so the result shows at once.
+    private var spotifyPollInterval: TimeInterval { isVisible ? 5 : 30 }
     private var nextSpotifyPoll = Date.distantPast
+
+    /// Whether the notch is open; set by the app delegate.
+    var isVisible = false {
+        didSet {
+            guard isVisible, !oldValue else { return }
+            nextSpotifyPoll = .distantPast
+            refresh()
+        }
+    }
     private var lastSpotifySnapshot: MediaSnapshot?
     private var lastNote = ""
 
@@ -115,14 +126,19 @@ final class MediaController: ObservableObject {
         poll = Task { [weak self] in
             defer { self?.poll = nil }
             guard let self else { return }
-            async let fromSpotify: MediaSnapshot? = spotify.isConnected ? spotifySnapshot() : nil
             async let fromSonos: (group: SonosGroup, snapshot: MediaSnapshot)? = sonos.isEnabled ? sonos.snapshot() : nil
             async let fromLocal: MediaSnapshot? = local.snapshot()
             let sonosReading = await fromSonos
+            let localReading = await fromLocal
+            // The speakers and the Mac are read on the LAN for free; the account is only needed
+            // for what they can't see (a Connect session, a phone), so it isn't asked while
+            // either of them is playing.
+            let playingNearby = sonosReading?.snapshot.isPlaying == true || localReading?.isPlaying == true
+            let fromSpotify: MediaSnapshot? = spotify.isConnected && !playingNearby ? await spotifySnapshot() : nil
             var candidates: [(MediaSourceKind, MediaSnapshot?)] = [
-                (.spotifyAPI, await fromSpotify),
+                (.spotifyAPI, fromSpotify),
                 (.sonos, sonosReading?.snapshot),
-                (.local, await fromLocal),
+                (.local, localReading),
             ]
             // A queue started on the speakers through the account linked in the Sonos app is
             // reported by the account too. Both are right; the speakers are the one with the
@@ -156,7 +172,7 @@ final class MediaController: ObservableObject {
     /// (offline, rate-limited, token mid-refresh) rather than flashing "Nothing playing".
     private func spotifySnapshot() async -> MediaSnapshot? {
         guard Date() >= nextSpotifyPoll else { return lastSpotifySnapshot }
-        nextSpotifyPoll = Date().addingTimeInterval(Self.spotifyPollInterval)
+        nextSpotifyPoll = Date().addingTimeInterval(spotifyPollInterval)
         do {
             guard let state = try await spotifyPlayer.state() else {
                 spotifyFailures = 0

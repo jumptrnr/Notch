@@ -106,6 +106,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             windowSize: geometry.window
         )
         self.state = state
+        state.$isOpen.removeDuplicates()
+            .sink { [weak self] open in self?.media.isVisible = open }
+            .store(in: &subscriptions)
 
         let rootView = NotchRootView(
             state: state,
