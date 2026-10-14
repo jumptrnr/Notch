@@ -6,6 +6,7 @@ struct BrowseView: View {
     @ObservedObject var browser: MediaBrowser
     @ObservedObject var sonos: SonosController
     @ObservedObject var generator: PlaylistGenerator
+    @ObservedObject var media: MediaController
     let close: () -> Void
     let openQueue: () -> Void
 
@@ -147,6 +148,19 @@ struct BrowseView: View {
                     .foregroundStyle(.white.opacity(0.4))
                     .lineLimit(1)
                 Spacer(minLength: 0)
+                if media.isMacSpotify {
+                    // Picking rooms doesn't move music already playing on the Mac; this does.
+                    Button {
+                        browser.moveFromMac(to: browser.targetGroup)
+                    } label: {
+                        Chip(icon: browser.startingID == "mac" ? "hourglass" : "laptopcomputer",
+                             text: "Move \(media.title.isEmpty ? "Spotify" : media.title) here")
+                            .frame(maxWidth: 180)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(browser.startingID != nil || browser.targetGroup == nil)
+                    .help("Play what Spotify on this Mac is playing on these rooms, and pause the Mac")
+                }
                 Button {
                     withAnimation(NotchState.toggle) { showRooms = false }
                 } label: {

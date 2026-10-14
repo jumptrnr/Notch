@@ -59,6 +59,8 @@ final class MediaController: ObservableObject {
     /// Which source the notch is showing, so controls reach the right player and the view can
     /// offer source-specific extras (Sonos grouping).
     @Published private(set) var activeSource: MediaSourceKind?
+    /// The Spotify app on this Mac is what's showing, so its music can be moved to the speakers.
+    var isMacSpotify: Bool { activeSource == .local && activeApp == "Spotify" }
     private var spotifyFailures = 0
     private var lastSpotifySnapshot: MediaSnapshot?
     private var lastNote = ""

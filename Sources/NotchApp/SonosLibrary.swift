@@ -233,8 +233,9 @@ extension SonosController {
     }
 
     /// Loads Spotify tracks into the group's queue, one by one, and plays it: a playlist that
-    /// exists nowhere but here, played through the account linked in the Sonos app.
-    func play(tracks: [GeneratedTrack], named name: String, on group: SonosGroup) async throws {
+    /// exists nowhere but here, played through the account linked in the Sonos app. `position`
+    /// starts the first track that far in, for picking up where another player was.
+    func play(tracks: [GeneratedTrack], named name: String, on group: SonosGroup, from position: Double = 0) async throws {
         guard !tracks.isEmpty else { throw SonosError.message("No tracks to play.") }
         let service = try await spotifyService()
         let ip = group.coordinatorIP
@@ -257,6 +258,12 @@ extension SonosController {
             ip: ip, service: "AVTransport", path: Self.avTransport, action: "SetAVTransportURI",
             body: "<InstanceID>0</InstanceID><CurrentURI>x-rincon-queue:\(group.coordinatorUUID)#0</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
         )
+        if position >= 1 {
+            _ = try await soap(
+                ip: ip, service: "AVTransport", path: Self.avTransport, action: "Seek",
+                body: "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>\(Self.clock(position))</Target>"
+            )
+        }
         _ = try await soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>")
         sonosLog.notice("started \(tracks.count) generated tracks (\(name, privacy: .public)) on \(group.label, privacy: .public)")
     }

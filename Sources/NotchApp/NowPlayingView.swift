@@ -12,7 +12,7 @@ struct NowPlayingView: View {
 
     var body: some View {
         if showBrowser, sonos.isEnabled {
-            BrowseView(browser: browser, sonos: sonos, generator: browser.generator, close: closeBrowser, openQueue: openQueue)
+            BrowseView(browser: browser, sonos: sonos, generator: browser.generator, media: media, close: closeBrowser, openQueue: openQueue)
                 .onAppear { browser.load() }
         } else if media.hasTrack {
             VStack(spacing: 6) {
@@ -183,6 +183,24 @@ struct NowPlayingView: View {
             }
             .buttonStyle(.plain)
             .help(showSpeakers ? "Hide speakers" : "Speakers and volume")
+        } else if media.isMacSpotify, sonos.isEnabled, !sonos.groups.isEmpty {
+            // Music on this Mac's Spotify app: the chip offers the speakers to move it to.
+            Menu {
+                Section("Move to") {
+                    ForEach(sonos.groups) { group in
+                        Button(group.label) { browser.moveFromMac(to: group) }
+                    }
+                }
+            } label: {
+                Chip(icon: browser.startingID == "mac" ? "hourglass" : "laptopcomputer", text: media.activeApp,
+                     detail: "This Mac", chevron: "chevron.down")
+            }
+            .menuStyle(.button)
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .disabled(browser.startingID != nil)
+            .help("Move to Sonos")
         } else {
             Chip(icon: "music.note", text: media.activeApp)
         }

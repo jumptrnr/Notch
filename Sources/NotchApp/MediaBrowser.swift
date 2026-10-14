@@ -21,6 +21,8 @@ final class MediaBrowser: ObservableObject {
     let generator = PlaylistGenerator()
     private let player: SpotifyPlayer
     private let media: MediaController
+    /// The Spotify app on this Mac, read and paused when its music moves to the speakers.
+    private let local = LocalPlayerSource()
     private var loadTask: Task<Void, Never>?
     private var loadedAt: Date?
 
@@ -103,6 +105,39 @@ final class MediaBrowser: ObservableObject {
             startingID = nil
             if started { media.refreshSoon() }
             completion(started)
+        }
+    }
+
+    /// Moves what the Spotify app on this Mac is playing to `group`: the same track, from the
+    /// same second, through the account linked in the Sonos app. The Mac is paused first:
+    /// Spotify streams one player per account, and a speaker started while the Mac is still
+    /// streaming is stopped a few seconds in. If the speakers then fail, the Mac plays on.
+    func moveFromMac(to group: SonosGroup?) {
+        guard startingID == nil else { return }
+        guard let group else {
+            message = "No Sonos group to play on."
+            return
+        }
+        startingID = "mac"
+        message = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { startingID = nil }
+            guard let (track, position) = await local.spotifyTrack() else {
+                message = "Spotify on this Mac isn't on a track the speakers can play."
+                return
+            }
+            let wasPlaying = media.isPlaying
+            await local.pauseSpotify()
+            do {
+                try await sonos.play(tracks: [track], named: track.name, on: group, from: position)
+                sonosLog.notice("moved \(track.name, privacy: .public) from this Mac to \(group.label, privacy: .public)")
+                media.refreshSoon()
+            } catch {
+                if wasPlaying { local.control("play", app: "Spotify") }
+                message = error.localizedDescription
+                sonosLog.error("move to \(group.label, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
     }
 

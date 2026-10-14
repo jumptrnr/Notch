@@ -630,7 +630,7 @@ final class SonosController: ObservableObject {
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     }
 
-    private nonisolated static func clock(_ seconds: Double) -> String {
+    nonisolated static func clock(_ seconds: Double) -> String {
         let total = Int(max(seconds, 0).rounded())
         return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
