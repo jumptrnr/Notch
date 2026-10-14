@@ -43,32 +43,32 @@ final class LocalPlayerSource {
         }
     }
 
-    /// The Spotify app's current track as a playable Spotify track, and how far in it is, so the
-    /// speakers can pick it up. nil for anything else: a local file, an episode, an ad, no app.
-    func spotifyTrack() async -> (track: GeneratedTrack, position: Double)? {
+    /// The Spotify app's current track as a playable Spotify track, so the speakers can pick it
+    /// up. nil for anything else: a local file, an episode, an ad, no app.
+    func spotifyTrack() async -> GeneratedTrack? {
         await withCheckedContinuation { continuation in
             queue.async {
                 let raw = Self.run(Self.spotifyTrackScript) ?? ""
                 let lines = raw.components(separatedBy: "\n")
                 let prefix = "spotify:track:"
-                guard lines.count >= 4, lines[0].hasPrefix(prefix) else {
+                guard lines.count >= 3, lines[0].hasPrefix(prefix) else {
                     continuation.resume(returning: nil)
                     return
                 }
                 let track = GeneratedTrack(id: String(lines[0].dropFirst(prefix.count)), name: lines[1], artist: lines[2],
-                                           album: "", artworkURL: lines.count >= 5 ? lines[4] : "")
-                continuation.resume(returning: (track, Self.number(lines[3]) ?? 0))
+                                           album: "", artworkURL: lines.count >= 4 ? lines[3] : "")
+                continuation.resume(returning: track)
             }
         }
     }
 
-    /// Output is linefeed-separated: track URI, title, artist, position in seconds, artwork URL.
+    /// Output is linefeed-separated: track URI, title, artist, artwork URL.
     private static let spotifyTrackScript = """
     set lf to (ASCII character 10)
     if application "Spotify" is not running then return ""
     tell application "Spotify"
         try
-            return (id of current track) & lf & (name of current track) & lf & (artist of current track) & lf & (player position as text) & lf & (artwork url of current track)
+            return (id of current track) & lf & (name of current track) & lf & (artist of current track) & lf & (artwork url of current track)
         end try
     end tell
     return ""

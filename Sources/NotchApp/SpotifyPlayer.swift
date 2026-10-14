@@ -17,8 +17,17 @@ final class SpotifyPlayer {
     }
 
     private let auth: SpotifyAuth
-    /// Set from a 429's Retry-After; polls before this just skip.
-    private var retryAfter = Date.distantPast
+
+    /// Set from a 429's Retry-After; no request goes out before it. Shared by every player, since
+    /// the limit is on the account's app, and kept across launches: a relaunch that asks again at
+    /// once only earns another 429.
+    private static var retryAfter: Date = {
+        let stored = UserDefaults.standard.double(forKey: retryAfterKey)
+        return stored > 0 ? Date(timeIntervalSince1970: stored) : .distantPast
+    }() {
+        didSet { UserDefaults.standard.set(retryAfter.timeIntervalSince1970, forKey: retryAfterKey) }
+    }
+    private static let retryAfterKey = "spotifyRetryAfter"
 
     init(auth: SpotifyAuth) {
         self.auth = auth
@@ -26,7 +35,6 @@ final class SpotifyPlayer {
 
     /// nil means nothing is playing: Spotify answers 204 when no device is active.
     func state() async throws -> State? {
-        guard Date() >= retryAfter else { throw SpotifyError.rateLimited }
         let (data, status) = try await send("GET", "me/player", query: "additional_types=track,episode")
         switch status {
         case 200:
@@ -63,7 +71,6 @@ final class SpotifyPlayer {
     /// ones need the playlist-read-private scope, granted at connect time; a connection made
     /// before that scope was asked for gets a 403 here and must be redone in Settings.
     func playlists() async throws -> [Playlist] {
-        guard Date() >= retryAfter else { throw SpotifyError.rateLimited }
         var out: [Playlist] = []
         var offset = 0
         while offset < 200 {
@@ -103,16 +110,26 @@ final class SpotifyPlayer {
     }
 
     private func command(_ method: String, _ path: String, query: String? = nil) async throws {
-        let (_, status) = try await send(method, path, query: query)
+        let (data, status) = try await send(method, path, query: query)
         switch status {
         case 200, 202, 204: return
-        case 403: throw SpotifyError.premiumRequired
+        case 403:
+            // 403 is also "restriction violated", e.g. pausing what is already paused.
+            let error = (try? JSONDecoder().decode(ErrorResponse.self, from: data))?.error
+            if error?.reason == "PREMIUM_REQUIRED" { throw SpotifyError.premiumRequired }
+            throw SpotifyError.message(error?.message ?? "Spotify refused the command.")
         case 404: throw SpotifyError.message("No active Spotify device.")
         default: throw SpotifyError.http(status)
         }
     }
 
+    private struct ErrorResponse: Decodable {
+        struct Body: Decodable { let message: String?; let reason: String? }
+        let error: Body
+    }
+
     private func send(_ method: String, _ path: String, query: String? = nil) async throws -> (Data, Int) {
+        guard Date() >= Self.retryAfter else { throw SpotifyError.rateLimited }
         let token = try await auth.validAccessToken()
         var urlString = "https://api.spotify.com/v1/" + path
         if let query { urlString += "?" + query }
@@ -126,8 +143,14 @@ final class SpotifyPlayer {
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 429 {
-            let wait = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init) ?? 5
-            retryAfter = Date().addingTimeInterval(wait)
+            let header = (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After")
+            guard let wait = header.flatMap(Double.init) else {
+                spotifyLog.error("429 without a usable Retry-After (\(header ?? "none", privacy: .public))")
+                throw SpotifyError.rateLimited
+            }
+            Self.retryAfter = Date().addingTimeInterval(wait)
+            spotifyLog.error("rate-limited for \(Int(wait))s on \(path, privacy: .public)")
+            throw SpotifyError.rateLimited
         }
         if status == 401 {
             auth.invalidateAccessToken()

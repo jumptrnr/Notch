@@ -76,6 +76,23 @@ extension SonosController {
         )
     }
 
+    /// Spotify's radio for a track: the track first, then similar ones for as long as it plays,
+    /// through the speakers' own Spotify login. It is a stream, so it can't be sought into, but
+    /// Next works. The ids are what the Sonos app writes when it starts a track's radio.
+    func spotifyTrackRadioItem(_ track: GeneratedTrack) async throws -> SonosItem {
+        let service = try await spotifyService()
+        let encoded = "spotify%3atrackRadio%3a\(track.id)"
+        let metadata = """
+        <DIDL-Lite \(Self.didlNamespaces)><item id="100c206c\(encoded)" parentID="0" restricted="true">\
+        <dc:title>\(Self.escape(track.name)) Radio</dc:title><upnp:class>object.item.audioItem.audioBroadcast.#trackRadio</upnp:class>\
+        <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">\(service.token)</desc></item></DIDL-Lite>
+        """
+        return SonosItem(
+            id: "spotify:trackRadio:\(track.id)", title: "\(track.name) Radio", subtitle: track.artist,
+            artworkURL: track.artworkURL, uri: "x-sonosapi-radio:\(encoded)?sid=\(service.id)&flags=8300&sn=\(service.serial)", metadata: metadata
+        )
+    }
+
     /// Spotify on this household: its service number, which differs by region, the serial of
     /// the account linked in the Sonos app, and the token the two make. Sonos keeps the serial
     /// to itself, so it is read off a starred Spotify item, where the app wrote it as `sn=`.
@@ -233,9 +250,8 @@ extension SonosController {
     }
 
     /// Loads Spotify tracks into the group's queue, one by one, and plays it: a playlist that
-    /// exists nowhere but here, played through the account linked in the Sonos app. `position`
-    /// starts the first track that far in, for picking up where another player was.
-    func play(tracks: [GeneratedTrack], named name: String, on group: SonosGroup, from position: Double = 0) async throws {
+    /// exists nowhere but here, played through the account linked in the Sonos app.
+    func play(tracks: [GeneratedTrack], named name: String, on group: SonosGroup) async throws {
         guard !tracks.isEmpty else { throw SonosError.message("No tracks to play.") }
         let service = try await spotifyService()
         let ip = group.coordinatorIP
@@ -258,12 +274,6 @@ extension SonosController {
             ip: ip, service: "AVTransport", path: Self.avTransport, action: "SetAVTransportURI",
             body: "<InstanceID>0</InstanceID><CurrentURI>x-rincon-queue:\(group.coordinatorUUID)#0</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
         )
-        if position >= 1 {
-            _ = try await soap(
-                ip: ip, service: "AVTransport", path: Self.avTransport, action: "Seek",
-                body: "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>\(Self.clock(position))</Target>"
-            )
-        }
         _ = try await soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>")
         sonosLog.notice("started \(tracks.count) generated tracks (\(name, privacy: .public)) on \(group.label, privacy: .public)")
     }

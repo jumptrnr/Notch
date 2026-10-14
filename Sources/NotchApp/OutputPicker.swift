@@ -219,12 +219,13 @@ struct OutputPicker: View {
                         .disabled(member && live.members.count == 1)
                     }
                 }
-                let others = sonos.groups.filter { $0.id != live.id }
-                if !others.isEmpty {
-                    Section("Switch to") {
-                        ForEach(others) { group in
-                            Button(group.label) { selection = group.id }
-                        }
+            }
+            // Also offered with no group chosen, so a picker whose group went away isn't empty.
+            let others = sonos.groups.filter { $0.id != current?.id }
+            if !others.isEmpty {
+                Section("Switch to") {
+                    ForEach(others) { group in
+                        Button(group.label) { selection = group.id }
                     }
                 }
             }

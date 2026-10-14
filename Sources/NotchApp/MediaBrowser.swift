@@ -33,8 +33,15 @@ final class MediaBrowser: ObservableObject {
         self.media = media
     }
 
+    /// A chosen group that has since changed (regrouped in the Sonos app) is followed through
+    /// the room it was chosen by, its coordinator then; with that room gone it is no group at
+    /// all, never some other one, so nothing starts where it wasn't asked to.
     var targetGroup: SonosGroup? {
-        sonos.groups.first { $0.id == targetGroupID } ?? sonos.activeGroup ?? sonos.groups.first
+        if let targetGroupID {
+            return sonos.groups.first { $0.id == targetGroupID }
+                ?? sonos.groups.first { $0.members.contains { $0.uuid == targetGroupID } }
+        }
+        return sonos.activeGroup ?? sonos.groups.first
     }
 
     /// Lists are fetched when the browser opens and kept for five minutes; the refresh button
@@ -108,8 +115,9 @@ final class MediaBrowser: ObservableObject {
         }
     }
 
-    /// Moves what the Spotify app on this Mac is playing to `group`: the same track, from the
-    /// same second, through the account linked in the Sonos app. The Mac is paused first:
+    /// Moves what the Spotify app on this Mac is playing to `group` as that track's Spotify
+    /// radio, through the account linked in the Sonos app: the track again from the top, then
+    /// similar music rather than silence once it ends. The Mac is paused first:
     /// Spotify streams one player per account, and a speaker started while the Mac is still
     /// streaming is stopped a few seconds in. If the speakers then fail, the Mac plays on.
     func moveFromMac(to group: SonosGroup?) {
@@ -123,14 +131,14 @@ final class MediaBrowser: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             defer { startingID = nil }
-            guard let (track, position) = await local.spotifyTrack() else {
+            guard let track = await local.spotifyTrack() else {
                 message = "Spotify on this Mac isn't on a track the speakers can play."
                 return
             }
             let wasPlaying = media.isPlaying
             await local.pauseSpotify()
             do {
-                try await sonos.play(tracks: [track], named: track.name, on: group, from: position)
+                try await sonos.play(sonos.spotifyTrackRadioItem(track), on: group)
                 sonosLog.notice("moved \(track.name, privacy: .public) from this Mac to \(group.label, privacy: .public)")
                 media.refreshSoon()
             } catch {

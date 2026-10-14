@@ -62,6 +62,10 @@ final class MediaController: ObservableObject {
     /// The Spotify app on this Mac is what's showing, so its music can be moved to the speakers.
     var isMacSpotify: Bool { activeSource == .local && activeApp == "Spotify" }
     private var spotifyFailures = 0
+    /// The account's player is read at most this often; every 2s was ~1,800 calls an hour and
+    /// got the app rate-limited. A command clears it so its result shows at once.
+    private static let spotifyPollInterval: TimeInterval = 5
+    private var nextSpotifyPoll = Date.distantPast
     private var lastSpotifySnapshot: MediaSnapshot?
     private var lastNote = ""
 
@@ -151,6 +155,8 @@ final class MediaController: ObservableObject {
     /// The Spotify API's view, holding the last good reading through a few transient failures
     /// (offline, rate-limited, token mid-refresh) rather than flashing "Nothing playing".
     private func spotifySnapshot() async -> MediaSnapshot? {
+        guard Date() >= nextSpotifyPoll else { return lastSpotifySnapshot }
+        nextSpotifyPoll = Date().addingTimeInterval(Self.spotifyPollInterval)
         do {
             guard let state = try await spotifyPlayer.state() else {
                 spotifyFailures = 0
@@ -172,7 +178,10 @@ final class MediaController: ObservableObject {
             return snapshot
         } catch {
             spotifyFailures += 1
-            note("Spotify poll failed: \(error.localizedDescription)")
+            // A rate limit is logged once, with its length, where it is set.
+            if case SpotifyError.rateLimited = error {} else {
+                note("Spotify poll failed: \(error.localizedDescription)")
+            }
             if spotifyFailures >= 3 || !spotify.isConnected { lastSpotifySnapshot = nil }
             return lastSpotifySnapshot
         }
@@ -312,6 +321,7 @@ final class MediaController: ObservableObject {
     private func remoteCommand(_ operation: @escaping @MainActor () async throws -> Void) {
         Task { [weak self] in
             guard let self else { return }
+            nextSpotifyPoll = .distantPast
             do {
                 try await operation()
             } catch {

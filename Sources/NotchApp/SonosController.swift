@@ -83,6 +83,12 @@ final class SonosController: ObservableObject {
     private var volumeHoldUntil: [String: Date] = [:]
     private var inFlight: Set<String> = []
     private var queued: [String: @MainActor () async throws -> Void] = [:]
+    /// The shown group's last good reading, and how many polls in a row have failed since.
+    private var lastActiveReading: (groupID: String, snapshot: MediaSnapshot)?
+    private var activeReadFailures = 0
+    private static let readFailuresTolerated = 3
+    /// The last grouping edit; the next one waits for it.
+    private var groupingTail: Task<Void, Never>?
 
     /// Every visible room on the network, for the speakers menu.
     var rooms: [SonosRoom] {
@@ -95,10 +101,20 @@ final class SonosController: ObservableObject {
         groups.first { $0.id == activeGroup?.id }?.members ?? activeGroup?.members ?? []
     }
 
+    /// Reads are polled, so they give up quickly.
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 2
         config.timeoutIntervalForResource = 3
+        return URLSession(configuration: config)
+    }()
+
+    /// Changes get longer: a speaker regrouping, or fetching a cloud playlist to queue, can take
+    /// several seconds, and one abandoned at 2s may still land, half-done.
+    private let writeSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 20
         return URLSession(configuration: config)
     }()
 
@@ -133,7 +149,8 @@ final class SonosController: ObservableObject {
                 }
             }
             if !reached {
-                groups = []
+                // The rooms stay as last seen: one missed answer shouldn't make Sonos vanish
+                // mid-song. Reads of an unreachable group fail on their own.
                 scanMessage = "No Sonos speakers answered. Check that this Mac is on the same network and that Notch is allowed to find local devices in System Settings › Privacy & Security › Local Network."
             } else if groups.isEmpty {
                 scanMessage = "A speaker answered but reported no groups."
@@ -203,8 +220,9 @@ final class SonosController: ObservableObject {
             activeGroup = nil
             return
         }
-        // Keep the latest topology's version if it has one: grouping edits land there first.
-        activeGroup = groups.first { $0.id == group.id } ?? group
+        // Keep the latest topology's version if it has one: grouping edits land there first, and
+        // a hand-over there has already moved the group to its new coordinator.
+        activeGroup = current(group)
         if wantsVolumes { await refreshVolumes() }
         if wantsQueue { await refreshQueue() }
     }
@@ -233,6 +251,9 @@ final class SonosController: ObservableObject {
             switch state {
             case "PLAYING", "TRANSITIONING": isPlaying = true
             case "PAUSED_PLAYBACK": isPlaying = false
+            // The shown group stopping (its queue ran out, a stream dropped) still shows, paused,
+            // so play goes back to it rather than to whatever player happens to be next.
+            case "STOPPED" where group.id == activeGroup?.id: isPlaying = false
             default: return nil
             }
             let positionXML = try await position
@@ -248,7 +269,7 @@ final class SonosController: ObservableObject {
             let creator = Self.text("dc:creator", in: metadata).map(Self.unescape) ?? ""
             var art = Self.text("upnp:albumArtURI", in: metadata).map(Self.unescape) ?? ""
             if art.hasPrefix("/") { art = "http://\(ip):1400\(art)" }
-            return MediaSnapshot(
+            let snapshot = MediaSnapshot(
                 title: stream.isEmpty ? title : stream,
                 artist: stream.isEmpty ? creator : title,
                 isPlaying: isPlaying,
@@ -257,8 +278,20 @@ final class SonosController: ObservableObject {
                 duration: Self.seconds(Self.text("TrackDuration", in: positionXML)) ?? 0,
                 label: "Sonos · \(group.label)"
             )
+            if group.id == activeGroup?.id {
+                lastActiveReading = (group.id, snapshot)
+                activeReadFailures = 0
+            }
+            return snapshot
         } catch {
             sonosLog.error("\(group.label, privacy: .public) unreachable: \(error.localizedDescription, privacy: .public)")
+            // A speaker busy regrouping misses a poll or two. The shown group keeps its last
+            // reading through that, or the notch would hand the controls to another player.
+            if group.id == activeGroup?.id, let last = lastActiveReading, last.groupID == group.id,
+               activeReadFailures < Self.readFailuresTolerated {
+                activeReadFailures += 1
+                return last.snapshot
+            }
             return nil
         }
     }
@@ -271,8 +304,30 @@ final class SonosController: ObservableObject {
     /// the rest of the group. The last room can't be unticked. The topology is edited locally
     /// at once so the list answers the click; the speakers' own version replaces it a moment
     /// later. Returns the group's coordinator afterwards, which changes on a hand-over.
+    ///
+    /// Edits run one at a time, each against the group as the one before left it: a speaker
+    /// mid-regroup stops answering, and overlapping clicks timed out and broke the group up.
     @discardableResult
     func setGrouped(_ room: SonosRoom, _ grouped: Bool, in group: SonosGroup) async -> String? {
+        let previous = groupingTail
+        let edit = Task { @MainActor [weak self] () -> String? in
+            await previous?.value
+            guard let self else { return nil }
+            return await self.regroup(room, grouped, in: self.current(group, besides: room))
+        }
+        groupingTail = Task { _ = await edit.value }
+        return await edit.value
+    }
+
+    /// `group` as the topology has it now. A hand-over changes its id, so failing that, the
+    /// group holding any of its rooms other than `room`.
+    private func current(_ group: SonosGroup, besides room: SonosRoom? = nil) -> SonosGroup {
+        if let same = groups.first(where: { $0.id == group.id }) { return same }
+        let others = Set(group.members.map(\.uuid)).subtracting([room?.uuid].compactMap { $0 })
+        return groups.first { $0.members.contains { others.contains($0.uuid) } } ?? group
+    }
+
+    private func regroup(_ room: SonosRoom, _ grouped: Bool, in group: SonosGroup) async -> String? {
         let isMember = group.members.contains { $0.uuid == room.uuid }
         guard grouped != isMember else { return group.id }
         let others = group.members.filter { $0.uuid != room.uuid }
@@ -488,7 +543,8 @@ final class SonosController: ObservableObject {
         <u:\(action) xmlns:u="urn:schemas-upnp-org:service:\(service):1">\(body)</u:\(action)>\
         </s:Body></s:Envelope>
         """.utf8)
-        let (data, response) = try await session.data(for: request)
+        let isRead = action.hasPrefix("Get") || action == "Browse" || action == "ListAvailableServices"
+        let (data, response) = try await (isRead ? session : writeSession).data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let xml = String(decoding: data, as: UTF8.self)
         guard status == 200 else {
@@ -630,7 +686,7 @@ final class SonosController: ObservableObject {
         return parts[0] * 3600 + parts[1] * 60 + parts[2]
     }
 
-    nonisolated static func clock(_ seconds: Double) -> String {
+    private nonisolated static func clock(_ seconds: Double) -> String {
         let total = Int(max(seconds, 0).rounded())
         return String(format: "%d:%02d:%02d", total / 3600, (total % 3600) / 60, total % 60)
     }
