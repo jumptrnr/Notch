@@ -17,6 +17,8 @@ final class MediaBrowser: ObservableObject {
 
     let sonos: SonosController
     let spotify: SpotifyAuth
+    /// Prompt-to-tracks through the playlist service; its results play through `playGenerated`.
+    let generator = PlaylistGenerator()
     private let player: SpotifyPlayer
     private let media: MediaController
     private var loadTask: Task<Void, Never>?
@@ -73,6 +75,34 @@ final class MediaBrowser: ObservableObject {
     func play(_ playlist: SpotifyPlayer.Playlist, completion: @escaping (Bool) -> Void) {
         start(id: "spotify:playlist:\(playlist.id)", completion: completion) { [sonos] in
             try await sonos.spotifyPlaylistItem(id: playlist.id, name: playlist.name, owner: playlist.owner, artworkURL: playlist.imageURL)
+        }
+    }
+
+    /// Starts what the generator produced on the chosen group.
+    func playGenerated(completion: @escaping (Bool) -> Void) {
+        guard startingID == nil else { return }
+        guard let group = targetGroup else {
+            message = "No Sonos group to play on."
+            completion(false)
+            return
+        }
+        let tracks = generator.tracks
+        let name = generator.name
+        startingID = "generated"
+        message = nil
+        Task { [weak self] in
+            guard let self else { return }
+            var started = false
+            do {
+                try await sonos.play(tracks: tracks, named: name, on: group)
+                started = true
+            } catch {
+                message = error.localizedDescription
+                sonosLog.error("start generated on \(group.label, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+            startingID = nil
+            if started { media.refreshSoon() }
+            completion(started)
         }
     }
 

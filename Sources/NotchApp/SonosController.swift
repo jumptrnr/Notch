@@ -11,6 +11,17 @@ struct SonosRoom: Identifiable, Equatable {
     var name: String
 }
 
+/// One entry of a group's queue.
+struct SonosQueueItem: Identifiable, Equatable {
+    /// 1-based, as the speaker numbers them.
+    var index: Int
+    var id: Int { index }
+    var title: String
+    var artist: String
+    var album: String
+    var artworkURL: String
+}
+
 /// One Sonos group: the rooms playing in sync. Only the coordinator carries transport state;
 /// the others report `x-rincon:<coordinator>` and no metadata, so it is the one to poll and command.
 struct SonosGroup: Identifiable, Equatable {
@@ -58,6 +69,15 @@ final class SonosController: ObservableObject {
     /// Set by the speakers panel. Volume is read on each poll only while it is showing, since
     /// that is three extra requests per room every two seconds.
     var wantsVolumes = false
+    /// The shown group's queue, read only while the queue panel is out.
+    var wantsQueue = false
+    @Published var queue: [SonosQueueItem] = []
+    /// 1-based position of the playing item in `queue`.
+    @Published var queueIndex: Int?
+    /// False when the transport is on a stream rather than the queue, so the list is not what's heard.
+    @Published var queueIsSource = true
+    var queueFetchedAt: Date?
+    var queueGroupID: String?
     /// Rooms whose volume was just set here; polls leave them alone until the speaker has
     /// applied the change, so a slider doesn't jump back under the cursor.
     private var volumeHoldUntil: [String: Date] = [:]
@@ -152,10 +172,11 @@ final class SonosController: ObservableObject {
 
     // MARK: Reading
 
-    /// The group that is playing, or paused if none is. Stopped groups keep a track loaded for
-    /// days, which isn't "now playing". Home-theatre and Spotify Connect inputs are skipped: they
-    /// carry no track metadata here (and Connect sessions are what the Spotify API already shows).
-    func snapshot() async -> MediaSnapshot? {
+    /// The group that is playing, or paused if none is, with what it is playing. Stopped groups
+    /// keep a track loaded for days, which isn't "now playing". Home-theatre and Spotify Connect
+    /// inputs are skipped: they carry no track metadata here (and Connect sessions are what the
+    /// Spotify API already shows). Which group the notch then shows is `show(_:)`'s business.
+    func snapshot() async -> (group: SonosGroup, snapshot: MediaSnapshot)? {
         await refreshTopologyIfStale()
         let groups = groups
         guard !groups.isEmpty else { return nil }
@@ -171,13 +192,35 @@ final class SonosController: ObservableObject {
         }
         let order = Dictionary(uniqueKeysWithValues: groups.enumerated().map { ($1.id, $0) })
         let sorted = readings.sorted { order[$0.0.id, default: 0] < order[$1.0.id, default: 0] }
-        guard let chosen = sorted.first(where: { $0.1.isPlaying }) ?? sorted.first else {
+        guard let chosen = sorted.first(where: { $0.1.isPlaying }) ?? sorted.first else { return nil }
+        return (chosen.0, chosen.1)
+    }
+
+    /// Makes `group` the one the notch shows: its rooms in the speakers panel, its queue, its
+    /// transport. Nil when what's showing isn't on Sonos at all.
+    func show(_ group: SonosGroup?) async {
+        guard let group else {
             activeGroup = nil
-            return nil
+            return
         }
-        activeGroup = chosen.0
+        // Keep the latest topology's version if it has one: grouping edits land there first.
+        activeGroup = groups.first { $0.id == group.id } ?? group
         if wantsVolumes { await refreshVolumes() }
-        return chosen.1
+        if wantsQueue { await refreshQueue() }
+    }
+
+    /// The group a Spotify Connect device name stands for. Sonos registers a group with Spotify
+    /// under its coordinator's room name, sometimes with the "+ 1" the app shows appended.
+    func group(forDevice name: String) -> SonosGroup? {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        let bare = trimmed.replacingOccurrences(of: #"\s*\+\s*\d+$"#, with: "", options: .regularExpression)
+        let candidates = [trimmed, bare]
+        func same(_ a: String, _ b: String) -> Bool { a.localizedCaseInsensitiveCompare(b) == .orderedSame }
+        if let byLabel = groups.first(where: { group in candidates.contains { same($0, group.label) || same($0, group.name) } }) {
+            return byLabel
+        }
+        return groups.first { group in group.members.contains { room in candidates.contains { same($0, room.name) } } }
     }
 
     private func read(_ group: SonosGroup) async -> MediaSnapshot? {
@@ -222,31 +265,85 @@ final class SonosController: ObservableObject {
 
     // MARK: Grouping
 
-    /// Adds `room` to the playing group, so it plays the same stream, or splits it back off.
-    /// The coordinator can't be removed: it is the one streaming.
-    func setGrouped(_ room: SonosRoom, _ grouped: Bool) {
-        guard let activeGroup, room.uuid != activeGroup.coordinatorUUID else { return }
-        Task {
-            do {
-                if grouped {
-                    _ = try await soap(
-                        ip: room.ip, service: "AVTransport", path: "/MediaRenderer/AVTransport/Control",
-                        action: "SetAVTransportURI",
-                        body: "<InstanceID>0</InstanceID><CurrentURI>x-rincon:\(activeGroup.coordinatorUUID)</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
-                    )
-                } else {
-                    _ = try await soap(
-                        ip: room.ip, service: "AVTransport", path: "/MediaRenderer/AVTransport/Control",
-                        action: "BecomeCoordinatorOfStandaloneGroup", body: "<InstanceID>0</InstanceID>"
-                    )
-                }
-                sonosLog.notice("\(room.name, privacy: .public) \(grouped ? "joined" : "left", privacy: .public) \(activeGroup.name, privacy: .public)")
-            } catch {
-                sonosLog.error("grouping \(room.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+    /// Ticks or unticks `room` in `group`, the way the Sonos app's room picker does: ticked, the
+    /// room plays what the group plays; unticked, it is on its own again. Unticking the room
+    /// that is streaming hands the stream to another member first, so the music carries on in
+    /// the rest of the group. The last room can't be unticked. The topology is edited locally
+    /// at once so the list answers the click; the speakers' own version replaces it a moment
+    /// later. Returns the group's coordinator afterwards, which changes on a hand-over.
+    @discardableResult
+    func setGrouped(_ room: SonosRoom, _ grouped: Bool, in group: SonosGroup) async -> String? {
+        let isMember = group.members.contains { $0.uuid == room.uuid }
+        guard grouped != isMember else { return group.id }
+        let others = group.members.filter { $0.uuid != room.uuid }
+        if !grouped, others.isEmpty { return group.id }
+        let isCoordinator = room.uuid == group.coordinatorUUID
+        let successor = isCoordinator && !grouped ? others.first : nil
+        let newCoordinator = successor?.uuid ?? group.coordinatorUUID
+
+        applyLocally(room: room, grouped: grouped, in: group, coordinator: newCoordinator)
+        do {
+            if grouped {
+                _ = try await soap(
+                    ip: room.ip, service: "AVTransport", path: "/MediaRenderer/AVTransport/Control",
+                    action: "SetAVTransportURI",
+                    body: "<InstanceID>0</InstanceID><CurrentURI>x-rincon:\(group.coordinatorUUID)</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
+                )
+            } else if let successor {
+                _ = try await soap(
+                    ip: room.ip, service: "ZoneGroupTopology", path: "/ZoneGroupTopology/Control",
+                    action: "DelegateGroupCoordinationTo",
+                    body: "<InstanceID>0</InstanceID><NewCoordinator>\(successor.uuid)</NewCoordinator><RejoinGroup>false</RejoinGroup>"
+                )
+            } else {
+                _ = try await soap(
+                    ip: room.ip, service: "AVTransport", path: "/MediaRenderer/AVTransport/Control",
+                    action: "BecomeCoordinatorOfStandaloneGroup", body: "<InstanceID>0</InstanceID>"
+                )
             }
-            // Sonos takes a beat to publish the new topology.
-            try? await Task.sleep(for: .milliseconds(500))
-            if let knownSpeaker { await refreshTopology(from: knownSpeaker) }
+            sonosLog.notice("\(room.name, privacy: .public) \(grouped ? "joined" : "left", privacy: .public) \(group.name, privacy: .public)\(successor.map { ", handed to \($0.name)" } ?? "", privacy: .public)")
+        } catch {
+            sonosLog.error("grouping \(room.name, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+        // Sonos takes a beat to publish the new topology.
+        try? await Task.sleep(for: .milliseconds(600))
+        if let knownSpeaker { await refreshTopology(from: knownSpeaker) }
+        return newCoordinator
+    }
+
+    /// Adds `room` to the playing group or splits it back off. Fire-and-forget form of the above.
+    func setGrouped(_ room: SonosRoom, _ grouped: Bool) {
+        guard let activeGroup else { return }
+        Task { await setGrouped(room, grouped, in: activeGroup) }
+    }
+
+    /// The topology as it will read once the speakers have applied a grouping edit.
+    private func applyLocally(room: SonosRoom, grouped: Bool, in group: SonosGroup, coordinator: String) {
+        var updated = groups
+        // Lift the room out of wherever it is. A group it was coordinating carries on under
+        // its first remaining member, which is what the speakers do too.
+        for index in updated.indices {
+            guard updated[index].members.contains(where: { $0.uuid == room.uuid }) else { continue }
+            updated[index].members.removeAll { $0.uuid == room.uuid }
+            if updated[index].coordinatorUUID == room.uuid, let next = updated[index].members.first {
+                updated[index].coordinatorUUID = next.uuid
+                updated[index].coordinatorIP = next.ip
+                updated[index].name = next.name
+            }
+        }
+        updated.removeAll { $0.members.isEmpty }
+        if grouped {
+            if let index = updated.firstIndex(where: { $0.id == group.id }) {
+                updated[index].members.append(room)
+                updated[index].members.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            }
+        } else {
+            updated.append(SonosGroup(coordinatorUUID: room.uuid, coordinatorIP: room.ip, name: room.name, members: [room]))
+        }
+        updated.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        groups = updated
+        if activeGroup?.id == group.id, let shown = updated.first(where: { $0.id == coordinator }) {
+            activeGroup = shown
         }
     }
 
@@ -356,6 +453,19 @@ final class SonosController: ObservableObject {
     func seek(to seconds: Double) async throws {
         let target = Self.clock(seconds)
         try await transport("Seek", body: "<InstanceID>0</InstanceID><Unit>REL_TIME</Unit><Target>\(target)</Target>")
+    }
+
+    /// Plays the queue from its `index`th item (1-based).
+    func jump(to index: Int) {
+        Task {
+            do {
+                try await transport("Seek", body: "<InstanceID>0</InstanceID><Unit>TRACK_NR</Unit><Target>\(index)</Target>")
+                try await play()
+                queueIndex = index
+            } catch {
+                sonosLog.error("jump to \(index) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 
     private func transport(_ action: String, body: String) async throws {

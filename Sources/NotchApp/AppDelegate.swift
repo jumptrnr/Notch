@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import CoreGraphics
 import SwiftUI
 
@@ -78,6 +79,7 @@ final class PassthroughHostingView<Content: View>: NSHostingView<Content> {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: NSPanel?
     private var state: NotchState?
+    private var subscriptions: [AnyCancellable] = []
     private var pointerMonitors: [Any] = []
     private var dragPoll: Timer?
     private var dragPasteboardCount = 0
@@ -121,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hostingView.state = state
         hostingView.shelf = shelf
 
-        let panel = NSPanel(
+        let panel = NotchPanel(
             contentRect: NSRect(origin: .zero, size: geometry.window),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -148,6 +150,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         self.panel = panel
         observeScreenChanges()
+        TextScale.shared.$value
+            .dropFirst()
+            .sink { [weak self] _ in self?.relayoutForCurrentScreens() }
+            .store(in: &subscriptions)
         startPointerTracking()
         media.start()
         // A code that lands while the notch is closed should be one hover away, not one hover plus
@@ -214,6 +220,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel.ignoresMouseEvents = !inside
         guard state.isOpen != inside else { return }
         withAnimation(NotchState.toggle) { state.isOpen = inside }
+        if !inside { releaseKeyboard() }
+    }
+
+    /// Typing in the library search makes the panel key. Once the notch shuts, keystrokes must go
+    /// back where they came from: resigning alone doesn't hand focus back to the other app's
+    /// window, but taking the panel off screen does, and it comes straight back, never key.
+    private func releaseKeyboard() {
+        guard let panel, panel.isKeyWindow else { return }
+        panel.makeFirstResponder(nil)
+        panel.orderOut(nil)
+        panel.orderFrontRegardless()
     }
 
     // MARK: Drag-to-open
@@ -352,9 +369,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let notchHeight = notch?.height ?? 32
         let notchWidth = max(120, notch?.width ?? 200)
 
+        // The panel grows with the text setting, so larger type gets the room it needs.
+        let scale = TextScale.shared.value
         let closed = CGSize(width: notchWidth, height: notchHeight)
-        let compactOpen = CGSize(width: 440, height: 168 + notchHeight)
-        let lyricsHeight: CGFloat = 164
+        let compactOpen = CGSize(width: (440 * scale).rounded(), height: (168 * scale).rounded() + notchHeight)
+        let lyricsHeight: CGFloat = (164 * scale).rounded()
         // The window never resizes — it is sized for the panel at its tallest (lyrics out) so
         // that growing the panel is only a layout change inside a window that already fits it.
         let window = CGSize(
@@ -368,4 +387,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             window: window
         )
     }
+}
+
+/// A borderless window says no to becoming key, which leaves a text field in it dead. This one
+/// says yes; being non-activating, it takes keystrokes without bringing the app forward.
+private final class NotchPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }

@@ -13,6 +13,9 @@ struct MediaSnapshot {
     var duration: Double
     /// Shown under the artist: "Spotify · Kitchen", "Sonos · Family Room", "Music".
     var label: String
+    /// The Spotify Connect device playing, when the account reports one. A Sonos room's name
+    /// when the session is on the speakers, which is what lets the speakers panel open for it.
+    var device: String = ""
 }
 
 enum MediaSourceKind {
@@ -107,23 +110,39 @@ final class MediaController: ObservableObject {
             defer { self?.poll = nil }
             guard let self else { return }
             async let fromSpotify: MediaSnapshot? = spotify.isConnected ? spotifySnapshot() : nil
-            async let fromSonos: MediaSnapshot? = sonos.isEnabled ? sonos.snapshot() : nil
+            async let fromSonos: (group: SonosGroup, snapshot: MediaSnapshot)? = sonos.isEnabled ? sonos.snapshot() : nil
             async let fromLocal: MediaSnapshot? = local.snapshot()
-            let candidates: [(MediaSourceKind, MediaSnapshot?)] = [
+            let sonosReading = await fromSonos
+            var candidates: [(MediaSourceKind, MediaSnapshot?)] = [
                 (.spotifyAPI, await fromSpotify),
-                (.sonos, await fromSonos),
+                (.sonos, sonosReading?.snapshot),
                 (.local, await fromLocal),
             ]
+            // A queue started on the speakers through the account linked in the Sonos app is
+            // reported by the account too. Both are right; the speakers are the one with the
+            // queue, the rooms and the volumes, so they are what's shown.
+            if let viaSonos = candidates[1].1, let viaSpotify = candidates[0].1,
+               viaSonos.title == viaSpotify.title, viaSonos.isPlaying == viaSpotify.isPlaying {
+                candidates.swapAt(0, 1)
+            }
             let available = candidates.compactMap { kind, snapshot in snapshot.map { (kind, $0) } }
             guard let (kind, snapshot) = available.first(where: { $0.1.isPlaying }) ?? available.first else {
                 note("nothing playing on any source")
                 activeSource = nil
                 clear()
+                await sonos.show(nil)
                 return
             }
             note("\(snapshot.isPlaying ? "playing" : "paused") via \(snapshot.label): \(snapshot.title)")
             activeSource = kind
             apply(snapshot)
+            // The speakers panel follows what's showing: the Sonos group itself, or the group a
+            // Spotify Connect session is on, so its rooms can be changed from here as well.
+            switch kind {
+            case .sonos: await sonos.show(sonosReading?.group)
+            case .spotifyAPI: await sonos.show(sonos.group(forDevice: snapshot.device))
+            case .local: await sonos.show(nil)
+            }
         }
     }
 
@@ -144,7 +163,8 @@ final class MediaController: ObservableObject {
                 artworkURL: state.artworkURL,
                 position: state.position,
                 duration: state.duration,
-                label: state.device.isEmpty ? "Spotify" : "Spotify · \(state.device)"
+                label: state.device.isEmpty ? "Spotify" : "Spotify · \(state.device)",
+                device: state.device
             )
             lastSpotifySnapshot = snapshot
             return snapshot

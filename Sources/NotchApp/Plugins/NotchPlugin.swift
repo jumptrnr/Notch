@@ -8,8 +8,12 @@ import SwiftUI
 protocol NotchPlugin: AnyObject {
     /// Stable identity for the tab; also what the logs call it.
     var id: String { get }
-    /// Tab label. Short: the tab bar is 440 points wide and already holds three.
+    /// Tab name. Short: the tab bar is 440 points wide and already holds three.
     var title: String { get }
+    /// What the tab shows. Defaults to `title`; a plug-in with a live reading can put it here,
+    /// the way a menu bar item would (icon plus a few characters), and the tab stays the size
+    /// of a word.
+    var tabLabel: AnyView { get }
     /// Whether the tab is shown. Re-read whenever `changes` fires.
     var isConfigured: Bool { get }
     /// Fires on anything the tab bar or the tab should redraw for. An `ObservableObject`'s
@@ -20,6 +24,10 @@ protocol NotchPlugin: AnyObject {
     /// The notch just expanded. Refresh here if the data is stale; the panel is shut most of the
     /// time and nothing should be fetched for it then.
     func notchOpened()
+}
+
+extension NotchPlugin {
+    var tabLabel: AnyView { AnyView(Text(title)) }
 }
 
 /// The installed plug-ins, in tab order. Republishes each one's changes so the tab bar and the

@@ -10,6 +10,7 @@ struct NotchRootView: View {
     @ObservedObject var codes: CodeWatcher
     @ObservedObject var accounts: MailAccountStore
     @ObservedObject var plugins: PluginRegistry
+    @ObservedObject var textScale = TextScale.shared
     let openSettings: () -> Void
 
     /// Read live from `SMAppService` each time the context menu opens, so the toggle stays
@@ -63,14 +64,14 @@ struct NotchRootView: View {
             Spacer()
             if codes.hasUnseenCode {
                 Image(systemName: "key.fill")
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.ui(10, weight: .semibold))
                     .foregroundStyle(.green)
                     .padding(.trailing, 10)
                     // Draws the eye to the notch without the panel having to open itself.
                     .transition(.scale.combined(with: .opacity))
             } else if media.isPlaying {
                 Image(systemName: "waveform")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.ui(11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.75))
                     .padding(.trailing, 10)
             }
@@ -84,7 +85,7 @@ struct NotchRootView: View {
             Group {
                 switch state.selectedTab {
                 case .nowPlaying:
-                    NowPlayingView(media: media, lyrics: lyrics, sonos: sonos, browser: browser, showLyrics: $state.showLyrics, showSpeakers: $state.showSpeakers, showBrowser: $state.showBrowser)
+                    NowPlayingView(media: media, lyrics: lyrics, sonos: sonos, browser: browser, showLyrics: $state.showLyrics, showSpeakers: $state.showSpeakers, showQueue: $state.showQueue, showBrowser: $state.showBrowser)
                 case .codes:
                     CodesView(watcher: codes, accounts: accounts, openSettings: openSettings)
                 case .shelf:
@@ -101,42 +102,75 @@ struct NotchRootView: View {
         .padding(.bottom, 16)
         .foregroundStyle(.white)
         .frame(width: state.openSize.width, height: state.openSize.height, alignment: .top)
+        // Fonts read the scale when a view is built, so a change rebuilds the whole panel.
+        .id(textScale.value)
     }
 
+    /// One track holding the tabs, the way a segmented control does, with Settings on the right
+    /// so it needn't be found in the right-click menu. Plug-ins supply their own label: the
+    /// Wind tab shows the wind.
     private var tabBar: some View {
-        HStack(spacing: 6) {
-            tab("Now Playing", .nowPlaying)
-            tab("Codes", .codes, badge: codes.hasUnseenCode)
-            tab("Shelf", .shelf)
-            ForEach(plugins.activeIDs, id: \.self) { id in
-                if let plugin = plugins.plugin(id) {
-                    tab(plugin.title, .plugin(id))
+        HStack(spacing: 8) {
+            HStack(spacing: 2) {
+                tab(.nowPlaying) {
+                    Label("Now Playing", systemImage: "waveform")
+                }
+                tab(.codes) {
+                    Label("Codes", systemImage: "key.fill")
+                    if codes.hasUnseenCode {
+                        Circle().fill(Color.green).frame(width: 5, height: 5)
+                    }
+                }
+                tab(.shelf) {
+                    Label("Shelf", systemImage: "tray.fill")
+                }
+                ForEach(plugins.activeIDs, id: \.self) { id in
+                    if let plugin = plugins.plugin(id) {
+                        tab(.plugin(id)) { plugin.tabLabel }
+                    }
                 }
             }
+            .padding(2)
+            .background(Capsule().fill(Color.white.opacity(0.08)))
+            Spacer(minLength: 0)
+            Button(action: openSettings) {
+                Image(systemName: "gearshape.fill")
+                    .font(.ui(11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(width: 22, height: 22)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
         }
-        .frame(maxWidth: .infinity)
+        .frame(height: 22)
     }
 
-    private func tab(_ label: String, _ value: NotchTab, badge: Bool = false) -> some View {
+    private func tab<Content: View>(_ value: NotchTab, @ViewBuilder label: () -> Content) -> some View {
         let selected = state.selectedTab == value
         return Button {
             withAnimation(.easeInOut(duration: 0.15)) { state.selectedTab = value }
             if value == .codes { codes.enterTab() }
         } label: {
-            HStack(spacing: 4) {
-                Text(label)
-                if badge {
-                    Circle().fill(Color.green).frame(width: 5, height: 5)
-                }
-            }
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(selected ? .white : .white.opacity(0.5))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(
-                Capsule().fill(Color.white.opacity(selected ? 0.18 : 0.0))
-            )
+            HStack(spacing: 4) { label() }
+                .labelStyle(TabLabelStyle())
+                .font(.ui(11, weight: selected ? .semibold : .medium))
+                .foregroundStyle(selected ? .white : .white.opacity(0.6))
+                .padding(.horizontal, 9)
+                .frame(height: 18)
+                .background(Capsule().fill(Color.white.opacity(selected ? 0.18 : 0)))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Icon then title, with the icon a touch smaller than the text so the row reads as words.
+private struct TabLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 4) {
+            configuration.icon.font(.ui(10, weight: .semibold))
+            configuration.title
+        }
     }
 }

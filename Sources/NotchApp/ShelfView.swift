@@ -16,9 +16,9 @@ struct ShelfView: View {
             if shelf.items.isEmpty {
                 VStack(spacing: 4) {
                     Image(systemName: "tray.and.arrow.down")
-                        .font(.system(size: 18))
+                        .font(.ui(18))
                     Text("Drop files here")
-                        .font(.system(size: 11))
+                        .font(.ui(11))
                 }
                 .foregroundStyle(.white.opacity(0.45))
             } else {
@@ -45,7 +45,7 @@ struct ShelfView: View {
                 .resizable()
                 .frame(width: 34, height: 34)
             Text(item.name)
-                .font(.system(size: 8))
+                .font(.ui(8))
                 .foregroundStyle(.white.opacity(0.75))
                 .lineLimit(1)
                 .frame(width: 48)

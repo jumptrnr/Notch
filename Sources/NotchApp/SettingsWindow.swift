@@ -14,7 +14,7 @@ final class SettingsWindow {
         }
         let view = SettingsView(spotify: spotify, sonos: sonos, plugins: plugins, accounts: accounts, watcher: watcher)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 960),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 1020),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -45,6 +45,9 @@ private struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            NotchSettingsView()
+                .padding(18)
+            Divider()
             SpotifySettingsView(auth: spotify)
                 .padding(18)
             Divider()
@@ -61,5 +64,26 @@ private struct SettingsView: View {
             MailSettingsView(accounts: accounts, watcher: watcher)
         }
         .frame(width: 420)
+    }
+}
+
+/// The panel itself: how large its text is drawn.
+private struct NotchSettingsView: View {
+    @ObservedObject var textScale = TextScale.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Notch")
+                .font(.headline)
+            Picker("Text size", selection: $textScale.value) {
+                ForEach(TextScale.options, id: \.value) { option in
+                    Text(option.label).tag(option.value)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text("The panel grows with the text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }

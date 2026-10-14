@@ -55,7 +55,7 @@ struct ProgressBar: View {
 
     private func time(_ seconds: Double, prefix: String = "") -> some View {
         Text(media.duration > 0 ? prefix + Self.format(seconds) : "--:--")
-            .font(.system(size: 9, weight: .medium).monospacedDigit())
+            .font(.ui(9, weight: .medium).monospacedDigit())
             .foregroundStyle(.white.opacity(0.5))
             .frame(width: 32, alignment: prefix.isEmpty ? .leading : .trailing)
     }

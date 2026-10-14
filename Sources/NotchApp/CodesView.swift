@@ -25,10 +25,10 @@ struct CodesView: View {
     private var setupPrompt: some View {
         VStack(spacing: 8) {
             Image(systemName: "envelope.badge.shield.half.filled")
-                .font(.system(size: 20))
+                .font(.ui(20))
                 .foregroundStyle(.white.opacity(0.5))
             Text("Connect iCloud or Gmail to catch verification codes")
-                .font(.system(size: 11))
+                .font(.ui(11))
                 .foregroundStyle(.white.opacity(0.55))
                 .multilineTextAlignment(.center)
             Button("Connect a Mailbox", action: openSettings)
@@ -46,12 +46,12 @@ struct CodesView: View {
                         .tint(.white.opacity(0.6))
                 }
                 Text(watcher.isChecking ? "Checking mail…" : "Waiting for a code")
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.ui(12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.7))
             }
             if let error = watcher.lastError {
                 Text(error)
-                    .font(.system(size: 9))
+                    .font(.ui(9))
                     .foregroundStyle(.orange.opacity(0.85))
                     .multilineTextAlignment(.center)
                     .lineLimit(2)
@@ -59,7 +59,7 @@ struct CodesView: View {
             } else {
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
                     Text(checkedLabel)
-                        .font(.system(size: 9))
+                        .font(.ui(9))
                         .foregroundStyle(.white.opacity(0.35))
                 }
             }
@@ -71,7 +71,7 @@ struct CodesView: View {
         VStack(spacing: 3) {
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 Text("\(code.sender) · \(Self.age(of: code.receivedAt))")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.ui(10, weight: .medium))
                     .foregroundStyle(.white.opacity(0.55))
                     .lineLimit(1)
             }
@@ -81,11 +81,11 @@ struct CodesView: View {
             } label: {
                 HStack(spacing: 10) {
                     Text(Self.grouped(code.code))
-                        .font(.system(size: 27, weight: .semibold, design: .monospaced))
+                        .font(.ui(27, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.white)
                     Image(systemName: watcher.copiedCode == code.code
                           ? "checkmark.circle.fill" : "doc.on.doc")
-                        .font(.system(size: 14))
+                        .font(.ui(14))
                         .foregroundStyle(watcher.copiedCode == code.code
                                          ? .green : .white.opacity(0.5))
                 }
@@ -100,7 +100,7 @@ struct CodesView: View {
             .help("Click to copy")
 
             Text(watcher.copiedCode == code.code ? "Copied to clipboard" : code.subject)
-                .font(.system(size: 9))
+                .font(.ui(9))
                 .foregroundStyle(watcher.copiedCode == code.code
                                  ? .green.opacity(0.9) : .white.opacity(0.4))
                 .lineLimit(1)
@@ -120,7 +120,7 @@ struct CodesView: View {
                     watcher.copy(code)
                 } label: {
                     Text(code.code)
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .font(.ui(9, weight: .medium, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.5))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
@@ -140,14 +140,14 @@ struct CodesView: View {
             Toggle("Auto-copy", isOn: $watcher.autoCopy)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
-                .font(.system(size: 9))
+                .font(.ui(9))
                 .foregroundStyle(.white.opacity(0.5))
                 .help("Copy each new code to the clipboard as it arrives")
             Button {
                 openSettings()
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 10))
+                    .font(.ui(10))
             }
             .buttonStyle(NotchButtonStyle())
             .help("Mail accounts")
@@ -194,7 +194,7 @@ struct NotchButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 10, weight: .medium))
+            .font(.ui(10, weight: .medium))
             .foregroundStyle(.white.opacity(configuration.isPressed ? 0.6 : 0.9))
             .padding(.horizontal, 10)
             .padding(.vertical, 4)

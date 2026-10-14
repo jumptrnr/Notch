@@ -61,15 +61,14 @@ extension SonosController {
 
     /// A Spotify playlist as the speakers' own Spotify account sees it, so it starts without
     /// Spotify Connect or Premium. The container id and the service token are what the Sonos
-    /// app writes for the same playlist; the token is derived from Spotify's service number on
-    /// this household, which differs by region.
+    /// app writes for the same playlist.
     func spotifyPlaylistItem(id: String, name: String, owner: String, artworkURL: String) async throws -> SonosItem {
-        let token = try await spotifyServiceToken()
+        let service = try await spotifyService()
         let objectID = "1006206cspotify%3aplaylist%3a\(id)"
         let metadata = """
         <DIDL-Lite \(Self.didlNamespaces)><item id="\(objectID)" parentID="0" restricted="true">\
         <dc:title>\(Self.escape(name))</dc:title><upnp:class>object.container.playlistContainer</upnp:class>\
-        <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">\(token)</desc></item></DIDL-Lite>
+        <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">\(service.token)</desc></item></DIDL-Lite>
         """
         return SonosItem(
             id: "spotify:playlist:\(id)", title: name, subtitle: owner.isEmpty ? "Spotify" : "Spotify · \(owner)",
@@ -77,7 +76,16 @@ extension SonosController {
         )
     }
 
-    private func spotifyServiceToken() async throws -> String {
+    /// Spotify on this household: its service number, which differs by region, the serial of
+    /// the account linked in the Sonos app, and the token the two make. Sonos keeps the serial
+    /// to itself, so it is read off a starred Spotify item, where the app wrote it as `sn=`.
+    struct SpotifyService {
+        var id: Int
+        var serial: Int
+        var token: String
+    }
+
+    func spotifyService() async throws -> SpotifyService {
         guard let ip = librarySpeaker else { throw SonosError.message("No Sonos speaker reachable.") }
         let xml = try await soap(ip: ip, service: "MusicServices", path: "/MusicServices/Control", action: "ListAvailableServices")
         let list = Self.text("AvailableServiceDescriptorList", in: xml).map(Self.unescape) ?? ""
@@ -86,13 +94,36 @@ extension SonosController {
               let range = Range(match.range(at: 1), in: list),
               let serviceID = Int(list[range])
         else { throw SonosError.message("Spotify isn't linked in the Sonos app.") }
+
+        let (favourites, _) = try await browse("FV:2")
+        guard let serialRegex = try? NSRegularExpression(pattern: #"[?&]sid=(\d+)&(?:amp;)?(?:[^&]*&(?:amp;)?)*sn=(\d+)"#) else {
+            throw SonosError.message("Bad serial pattern.")
+        }
+        var serials: [Int: Int] = [:]
+        for fields in favourites {
+            for value in [fields["res"], fields["r:resMD"]].compactMap({ $0 }) {
+                for found in serialRegex.matches(in: value, range: NSRange(value.startIndex..., in: value)) {
+                    guard let sidRange = Range(found.range(at: 1), in: value), Int(value[sidRange]) == serviceID,
+                          let snRange = Range(found.range(at: 2), in: value), let serial = Int(value[snRange]) else { continue }
+                    serials[serial, default: 0] += 1
+                }
+            }
+        }
+        guard let serial = serials.max(by: { $0.value < $1.value })?.key else {
+            throw SonosError.message("Star any Spotify item in the Sonos app first; Notch reads the account number from it.")
+        }
         let number = serviceID * 256 + 7
-        return "SA_RINCON\(number)_X_#Svc\(number)-0-Token"
+        return SpotifyService(id: serviceID, serial: serial, token: "SA_RINCON\(number)_X_#Svc\(number)-0-Token")
     }
 
     /// Direct children of a container, as a dictionary of tag text per entry plus its id.
     private func browse(_ objectID: String) async throws -> (items: [[String: String]], speaker: String) {
         guard let ip = librarySpeaker else { throw SonosError.message("No Sonos speaker reachable.") }
+        return try await browse(objectID, on: ip)
+    }
+
+    /// The same, from a given speaker: a queue lives on its group's coordinator.
+    private func browse(_ objectID: String, on ip: String) async throws -> (items: [[String: String]], speaker: String) {
         let xml = try await soap(
             ip: ip, service: "ContentDirectory", path: Self.contentDirectory, action: "Browse",
             body: "<ObjectID>\(objectID)</ObjectID><BrowseFlag>BrowseDirectChildren</BrowseFlag><Filter>*</Filter>"
@@ -129,6 +160,49 @@ extension SonosController {
         return art.hasPrefix("/") ? "http://\(speaker):1400\(art)" : art
     }
 
+    // MARK: Queue
+
+    /// Where the shown group is in its queue, and the queue itself. The position is read on
+    /// every poll; the list only when the group changes, on demand, or every half minute, since
+    /// a long queue is a sizeable browse.
+    func refreshQueue(force: Bool = false) async {
+        guard let group = activeGroup else {
+            queue = []
+            queueIndex = nil
+            return
+        }
+        let ip = group.coordinatorIP
+        do {
+            async let position = soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "GetPositionInfo", body: "<InstanceID>0</InstanceID>")
+            async let media = soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "GetMediaInfo", body: "<InstanceID>0</InstanceID>")
+            let positionXML = try await position
+            let mediaXML = try await media
+            queueIsSource = (Self.text("CurrentURI", in: mediaXML) ?? "").hasPrefix("x-rincon-queue:")
+            let track = Self.text("Track", in: positionXML).flatMap(Int.init)
+            queueIndex = (track ?? 0) > 0 ? track : nil
+            let stale = queueFetchedAt.map { Date().timeIntervalSince($0) > 30 } ?? true
+            let moved = queueGroupID != group.id
+            // A track number past the end of what was listed means the queue grew.
+            let grew = (track ?? 0) > queue.count
+            if force || stale || moved || grew {
+                let (items, _) = try await browse("Q:0", on: ip)
+                queue = items.enumerated().map { offset, fields in
+                    SonosQueueItem(
+                        index: offset + 1,
+                        title: fields["dc:title"] ?? "",
+                        artist: fields["dc:creator"] ?? "",
+                        album: fields["upnp:album"] ?? "",
+                        artworkURL: Self.absoluteArt(fields["upnp:albumArtURI"], speaker: ip)
+                    )
+                }
+                queueFetchedAt = Date()
+                queueGroupID = group.id
+            }
+        } catch {
+            sonosLog.error("queue on \(group.label, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     // MARK: Starting
 
     /// Hands the item to the group's coordinator and plays it. Streams (radio, line-in) go
@@ -156,5 +230,34 @@ extension SonosController {
         }
         _ = try await soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>")
         sonosLog.notice("started \(item.title, privacy: .public) on \(group.label, privacy: .public)")
+    }
+
+    /// Loads Spotify tracks into the group's queue, one by one, and plays it: a playlist that
+    /// exists nowhere but here, played through the account linked in the Sonos app.
+    func play(tracks: [GeneratedTrack], named name: String, on group: SonosGroup) async throws {
+        guard !tracks.isEmpty else { throw SonosError.message("No tracks to play.") }
+        let service = try await spotifyService()
+        let ip = group.coordinatorIP
+        _ = try await soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "RemoveAllTracksFromQueue", body: "<InstanceID>0</InstanceID>")
+        for track in tracks {
+            let encoded = "spotify%3atrack%3a\(track.id)"
+            let uri = "x-sonos-spotify:\(encoded)?sid=\(service.id)&flags=8224&sn=\(service.serial)"
+            let metadata = """
+            <DIDL-Lite \(Self.didlNamespaces)><item id="00032020\(encoded)" parentID="-1" restricted="true">\
+            <dc:title>\(Self.escape(track.name))</dc:title><upnp:class>object.item.audioItem.musicTrack</upnp:class>\
+            <desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">\(service.token)</desc></item></DIDL-Lite>
+            """
+            _ = try await soap(
+                ip: ip, service: "AVTransport", path: Self.avTransport, action: "AddURIToQueue",
+                body: "<InstanceID>0</InstanceID><EnqueuedURI>\(Self.escape(uri))</EnqueuedURI><EnqueuedURIMetaData>\(Self.escape(metadata))</EnqueuedURIMetaData>"
+                    + "<DesiredFirstTrackNumberEnqueued>0</DesiredFirstTrackNumberEnqueued><EnqueueAsNext>0</EnqueueAsNext>"
+            )
+        }
+        _ = try await soap(
+            ip: ip, service: "AVTransport", path: Self.avTransport, action: "SetAVTransportURI",
+            body: "<InstanceID>0</InstanceID><CurrentURI>x-rincon-queue:\(group.coordinatorUUID)#0</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
+        )
+        _ = try await soap(ip: ip, service: "AVTransport", path: Self.avTransport, action: "Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>")
+        sonosLog.notice("started \(tracks.count) generated tracks (\(name, privacy: .public)) on \(group.label, privacy: .public)")
     }
 }

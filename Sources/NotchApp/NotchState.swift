@@ -30,6 +30,8 @@ final class NotchState: ObservableObject {
     @Published var showSpeakers = false
     /// Whether the Now Playing tab shows the library browser instead of the track. Tall as well.
     @Published var showBrowser = false
+    /// Whether the Sonos queue is out in the lyrics panel's slot.
+    @Published var showQueue = false
 
     /// Size of the notch chrome when collapsed (matches the hardware notch when present).
     private(set) var closedSize: CGSize
@@ -43,7 +45,7 @@ final class NotchState: ObservableObject {
     /// Size of the expanded panel as it currently stands. Plug-in tabs always get the tall
     /// panel: a list of anything needs more than the compact height holds.
     var openSize: CGSize {
-        guard showLyrics || showSpeakers || showBrowser || selectedTab.isPlugin else { return compactOpenSize }
+        guard showLyrics || showSpeakers || showQueue || showBrowser || selectedTab.isPlugin else { return compactOpenSize }
         return CGSize(width: compactOpenSize.width, height: compactOpenSize.height + lyricsHeight)
     }
 

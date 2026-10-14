@@ -82,10 +82,10 @@ struct LyricsView: View {
         return Group {
             if line.isGap {
                 Image(systemName: "music.note")
-                    .font(.system(size: 9))
+                    .font(.ui(9))
             } else {
                 Text(line.text)
-                    .font(.system(size: 13, weight: isCurrent ? .semibold : .regular))
+                    .font(.ui(13, weight: isCurrent ? .semibold : .regular))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -116,7 +116,7 @@ struct LyricsView: View {
 
     private func message(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11))
+            .font(.ui(11))
             .foregroundStyle(.white.opacity(0.4))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

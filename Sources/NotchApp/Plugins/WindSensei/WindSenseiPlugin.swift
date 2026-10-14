@@ -29,6 +29,7 @@ final class WindSenseiPlugin: ObservableObject, NotchPlugin {
     var changes: AnyPublisher<Void, Never> { objectWillChange.eraseToAnyPublisher() }
     var settingsView: AnyView { AnyView(WindSenseiSettingsView(plugin: self)) }
     var tabView: AnyView { AnyView(WindSenseiView(plugin: self)) }
+    var tabLabel: AnyView { AnyView(WindSenseiTabLabel(plugin: self)) }
 
     private var timer: Task<Void, Never>?
     private var fetchTask: Task<Void, Never>?
