@@ -290,10 +290,11 @@ final class SonosController: ObservableObject {
                     body: "<InstanceID>0</InstanceID><CurrentURI>x-rincon:\(group.coordinatorUUID)</CurrentURI><CurrentURIMetaData></CurrentURIMetaData>"
                 )
             } else if let successor {
+                // An AVTransport action, despite the name: the stream moves with the coordination.
                 _ = try await soap(
-                    ip: room.ip, service: "ZoneGroupTopology", path: "/ZoneGroupTopology/Control",
+                    ip: room.ip, service: "AVTransport", path: "/MediaRenderer/AVTransport/Control",
                     action: "DelegateGroupCoordinationTo",
-                    body: "<InstanceID>0</InstanceID><NewCoordinator>\(successor.uuid)</NewCoordinator><RejoinGroup>false</RejoinGroup>"
+                    body: "<InstanceID>0</InstanceID><NewCoordinator>\(successor.uuid)</NewCoordinator><RejoinGroup>0</RejoinGroup>"
                 )
             } else {
                 _ = try await soap(
