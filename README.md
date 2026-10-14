@@ -11,8 +11,9 @@ Requires macOS 14 or later and Xcode's Swift toolchain.
 ./run.sh
 ```
 
-This builds the package in release mode, wraps the binary in `Notch.app`, signs it, and launches
-it. Copy `Notch.app` to `/Applications` to keep it.
+This builds the package in release mode, wraps the binary in `Notch.app`, signs it, installs it
+into `/Applications` (replacing the copy there) and launches it. The login item follows the
+installed copy. Set `INSTALL_DIR` to install somewhere else.
 
 By default the bundle is ad-hoc signed. Set `CODESIGN_IDENTITY` to a certificate name from
 `security find-identity -v -p codesigning` to sign with it instead, so macOS treats each rebuild
