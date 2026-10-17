@@ -68,12 +68,24 @@ final class MediaController: ObservableObject {
     /// clears the wait so the result shows at once.
     private var spotifyPollInterval: TimeInterval { isVisible ? 5 : 30 }
     private var nextSpotifyPoll = Date.distantPast
+    /// Each read of the Mac's players starts an osascript, so they aren't read on every 2s tick:
+    /// only when Spotify or Music announces a change (play, pause, skip, new track), after a
+    /// command, and otherwise every 5s open / 30s closed to correct the position the ticker
+    /// extrapolates. With neither app running nothing is started at all.
+    private var localPollInterval: TimeInterval { isVisible ? 5 : 30 }
+    private var nextLocalPoll = Date.distantPast
+    private var lastLocalSnapshot: MediaSnapshot?
+    private static let localPlayerNotifications = [
+        Notification.Name("com.spotify.client.PlaybackStateChanged"),
+        Notification.Name("com.apple.Music.playerInfo"),
+    ]
 
     /// Whether the notch is open; set by the app delegate.
     var isVisible = false {
         didSet {
             guard isVisible, !oldValue else { return }
             nextSpotifyPoll = .distantPast
+            nextLocalPoll = .distantPast
             refresh()
         }
     }
@@ -94,6 +106,16 @@ final class MediaController: ObservableObject {
                 self?.refresh()
             }
             .store(in: &subscriptions)
+        let center = DistributedNotificationCenter.default()
+        for name in Self.localPlayerNotifications {
+            center.publisher(for: name)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in
+                    self?.nextLocalPoll = .distantPast
+                    self?.refresh()
+                }
+                .store(in: &subscriptions)
+        }
     }
 
     func start() {
@@ -127,7 +149,7 @@ final class MediaController: ObservableObject {
             defer { self?.poll = nil }
             guard let self else { return }
             async let fromSonos: (group: SonosGroup, snapshot: MediaSnapshot)? = sonos.isEnabled ? sonos.snapshot() : nil
-            async let fromLocal: MediaSnapshot? = local.snapshot()
+            async let fromLocal: MediaSnapshot? = localSnapshot()
             let sonosReading = await fromSonos
             let localReading = await fromLocal
             // The speakers and the Mac are read on the LAN for free; the account is only needed
@@ -166,6 +188,26 @@ final class MediaController: ObservableObject {
             case .local: await sonos.show(nil)
             }
         }
+    }
+
+    /// The Mac's players, read only when something may have changed (see `localPollInterval`).
+    /// In between, the last reading is reused without its position, so the ticker keeps
+    /// extrapolating instead of jumping back to the old value.
+    private func localSnapshot() async -> MediaSnapshot? {
+        let running = NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
+        guard running.contains("com.spotify.client") || running.contains("com.apple.Music") else {
+            lastLocalSnapshot = nil
+            return nil
+        }
+        guard Date() >= nextLocalPoll else {
+            guard var cached = lastLocalSnapshot else { return nil }
+            cached.position = nil
+            return cached
+        }
+        nextLocalPoll = Date().addingTimeInterval(localPollInterval)
+        let snapshot = await local.snapshot()
+        lastLocalSnapshot = snapshot
+        return snapshot
     }
 
     /// The Spotify API's view, holding the last good reading through a few transient failures
@@ -313,7 +355,9 @@ final class MediaController: ObservableObject {
         switch activeSource {
         case .spotifyAPI: remoteCommand { [spotifyPlayer] in try await spotifyPlayer.seek(to: target) }
         case .sonos: remoteCommand { [sonos] in try await sonos.seek(to: target) }
-        case .local, nil: local.seek(to: target, app: localApp)
+        case .local, nil:
+            local.seek(to: target, app: localApp)
+            nextLocalPoll = Date().addingTimeInterval(1.5)
         }
     }
 
@@ -355,6 +399,7 @@ final class MediaController: ObservableObject {
         local.control(command, app: localApp)
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(300))
+            self?.nextLocalPoll = .distantPast
             self?.refresh()
         }
     }
