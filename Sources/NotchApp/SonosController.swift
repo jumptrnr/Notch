@@ -62,6 +62,9 @@ final class SonosController: ObservableObject {
     private var lastUsedRooms: [String] = [] {
         didSet { UserDefaults.standard.set(lastUsedRooms, forKey: Self.lastUsedRoomsKey) }
     }
+    /// Whether the last-used rooms that have drifted apart since are still to be put back
+    /// together. The first play of a launch does that; a grouping edit made here first cancels it.
+    private var regroupPending = true
     private var topologyRefreshedAt = Date.distantPast
     private var scanTask: Task<Void, Never>?
     /// The group currently shown in the notch; transport commands and grouping changes go here.
@@ -119,8 +122,40 @@ final class SonosController: ObservableObject {
         return best
     }
 
+    /// On the first play of a launch on the last-used speakers, pulls back in the rooms that have
+    /// left them since (split off in the Sonos app, or by the speakers themselves). A room now
+    /// playing something else is left where it is. Returns `group` as it then stands.
+    func regroupLastUsed(into group: SonosGroup) async -> SonosGroup {
+        guard regroupPending else { return group }
+        regroupPending = false
+        let group = current(group)
+        guard group.id == lastUsedGroup?.id else { return group }
+        let missing = lastUsedRooms
+            .filter { uuid in !group.members.contains { $0.uuid == uuid } }
+            .compactMap { uuid in rooms.first { $0.uuid == uuid } }
+        guard !missing.isEmpty else { return group }
+        var coordinator = group.id
+        for room in missing {
+            if let home = groups.first(where: { $0.members.contains { $0.uuid == room.uuid } }), await isPlaying(home) {
+                sonosLog.notice("not regrouping \(room.name, privacy: .public): \(home.label, privacy: .public) is playing")
+                continue
+            }
+            coordinator = await setGrouped(room, true, in: groups.first { $0.id == coordinator } ?? group) ?? coordinator
+        }
+        return groups.first { $0.id == coordinator } ?? group
+    }
+
+    private func isPlaying(_ group: SonosGroup) async -> Bool {
+        let xml = try? await soap(ip: group.coordinatorIP, service: "AVTransport", path: "/MediaRenderer/AVTransport/Control", action: "GetTransportInfo", body: "<InstanceID>0</InstanceID>")
+        let state = xml.flatMap { Self.text("CurrentTransportState", in: $0) }
+        return state == "PLAYING" || state == "TRANSITIONING"
+    }
+
     /// Notes `group` as the speakers in use, for the next launch.
     func remember(_ group: SonosGroup) {
+        // Picking the drifted-apart group before the first play mustn't forget the rooms that
+        // play will bring back.
+        if regroupPending, group.id == lastUsedGroup?.id { return }
         let rooms = [group.coordinatorUUID] + group.members.map(\.uuid).filter { $0 != group.coordinatorUUID }
         guard rooms != lastUsedRooms else { return }
         lastUsedRooms = rooms
@@ -341,6 +376,7 @@ final class SonosController: ObservableObject {
     /// mid-regroup stops answering, and overlapping clicks timed out and broke the group up.
     @discardableResult
     func setGrouped(_ room: SonosRoom, _ grouped: Bool, in group: SonosGroup) async -> String? {
+        regroupPending = false
         let previous = groupingTail
         let edit = Task { @MainActor [weak self] () -> String? in
             await previous?.value
@@ -536,6 +572,7 @@ final class SonosController: ObservableObject {
     // MARK: Controls
 
     func play() async throws {
+        if let activeGroup { _ = await regroupLastUsed(into: activeGroup) }
         try await transport("Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>")
         if let activeGroup { remember(current(activeGroup)) }
     }

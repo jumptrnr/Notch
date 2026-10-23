@@ -226,6 +226,7 @@ extension SonosController {
     /// straight to the transport; everything else is loaded into the group's queue and the
     /// transport pointed at that, which is how the Sonos app starts a playlist or album.
     func play(_ item: SonosItem, on group: SonosGroup) async throws {
+        let group = await regroupLastUsed(into: group)
         remember(group)
         let ip = group.coordinatorIP
         let streamPrefixes = ["x-sonosapi-stream:", "x-sonosapi-radio:", "x-sonosapi-hls:", "x-rincon-stream:", "x-sonos-http:"]
@@ -254,6 +255,7 @@ extension SonosController {
     /// exists nowhere but here, played through the account linked in the Sonos app.
     func play(tracks: [GeneratedTrack], named name: String, on group: SonosGroup) async throws {
         guard !tracks.isEmpty else { throw SonosError.message("No tracks to play.") }
+        let group = await regroupLastUsed(into: group)
         remember(group)
         let service = try await spotifyService()
         let ip = group.coordinatorIP
