@@ -4,6 +4,8 @@
 # Set INSTALL_DIR to install somewhere else.
 set -e
 cd "$(dirname "$0")"
+# Machine-specific settings such as CODESIGN_IDENTITY; gitignored.
+[ -f run.local ] && source run.local
 
 CONFIG="${1:-release}"
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"

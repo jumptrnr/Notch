@@ -23,6 +23,8 @@ as the same app for Automation and Local Network permissions:
 CODESIGN_IDENTITY="Apple Development: you@example.com (TEAMID)" ./run.sh
 ```
 
+To make it stick, put that line in a `run.local` file next to `run.sh` (gitignored); `run.sh` sources it.
+
 ## Now Playing sources
 
 Notch polls every enabled source every two seconds and shows whichever one is playing. If nothing
