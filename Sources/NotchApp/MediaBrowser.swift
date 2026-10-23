@@ -12,8 +12,11 @@ final class MediaBrowser: ObservableObject {
     @Published private(set) var message: String?
     /// The item being started, for its spinner.
     @Published private(set) var startingID: String?
-    /// Chosen in the browser's picker; otherwise the group that is showing, else the first.
-    @Published var targetGroupID: String?
+    /// Chosen in the browser's picker; otherwise the group that is showing, else the one last
+    /// used here, else the first.
+    @Published var targetGroupID: String? {
+        didSet { if targetGroupID != oldValue, let targetGroup { sonos.remember(targetGroup) } }
+    }
 
     let sonos: SonosController
     let spotify: SpotifyAuth
@@ -41,7 +44,7 @@ final class MediaBrowser: ObservableObject {
             return sonos.groups.first { $0.id == targetGroupID }
                 ?? sonos.groups.first { $0.members.contains { $0.uuid == targetGroupID } }
         }
-        return sonos.activeGroup ?? sonos.groups.first
+        return sonos.activeGroup ?? sonos.lastUsedGroup ?? sonos.groups.first
     }
 
     /// Lists are fetched when the browser opens and kept for five minutes; the refresh button

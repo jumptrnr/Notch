@@ -51,10 +51,16 @@ final class SonosController: ObservableObject {
 
     private static let enabledKey = "sonosEnabled"
     private static let knownSpeakerKey = "sonosKnownSpeaker"
+    private static let lastUsedRoomsKey = "sonosLastUsedRooms"
 
     /// Any reachable speaker's IP, good for fetching topology without another SSDP round.
     private(set) var knownSpeaker: String? {
         didSet { UserDefaults.standard.set(knownSpeaker, forKey: Self.knownSpeakerKey) }
+    }
+    /// UUIDs of the rooms last played on or grouped from here, streaming room first. With
+    /// nothing playing, these are the speakers the notch and the browser start on.
+    private var lastUsedRooms: [String] = [] {
+        didSet { UserDefaults.standard.set(lastUsedRooms, forKey: Self.lastUsedRoomsKey) }
     }
     private var topologyRefreshedAt = Date.distantPast
     private var scanTask: Task<Void, Never>?
@@ -101,6 +107,26 @@ final class SonosController: ObservableObject {
         groups.first { $0.id == activeGroup?.id }?.members ?? activeGroup?.members ?? []
     }
 
+    /// The group holding the most of the last-used rooms, the one with their streaming room on
+    /// a tie. Nil before anything has been played here, or once those rooms are all gone.
+    var lastUsedGroup: SonosGroup? {
+        guard let coordinator = lastUsedRooms.first else { return nil }
+        let used = Set(lastUsedRooms)
+        func score(_ group: SonosGroup) -> (Int, Int) {
+            (group.members.filter { used.contains($0.uuid) }.count, group.members.contains { $0.uuid == coordinator } ? 1 : 0)
+        }
+        guard let best = groups.max(by: { score($0) < score($1) }), score(best).0 > 0 else { return nil }
+        return best
+    }
+
+    /// Notes `group` as the speakers in use, for the next launch.
+    func remember(_ group: SonosGroup) {
+        let rooms = [group.coordinatorUUID] + group.members.map(\.uuid).filter { $0 != group.coordinatorUUID }
+        guard rooms != lastUsedRooms else { return }
+        lastUsedRooms = rooms
+        sonosLog.notice("last used: \(group.label, privacy: .public)")
+    }
+
     /// Reads are polled, so they give up quickly.
     private let session: URLSession = {
         let config = URLSessionConfiguration.ephemeral
@@ -123,6 +149,7 @@ final class SonosController: ObservableObject {
         // which users without Sonos shouldn't see.
         isEnabled = UserDefaults.standard.bool(forKey: Self.enabledKey)
         knownSpeaker = UserDefaults.standard.string(forKey: Self.knownSpeakerKey)
+        lastUsedRooms = UserDefaults.standard.stringArray(forKey: Self.lastUsedRoomsKey) ?? []
         if isEnabled { scan() }
     }
 
@@ -209,7 +236,9 @@ final class SonosController: ObservableObject {
         }
         let order = Dictionary(uniqueKeysWithValues: groups.enumerated().map { ($1.id, $0) })
         let sorted = readings.sorted { order[$0.0.id, default: 0] < order[$1.0.id, default: 0] }
-        guard let chosen = sorted.first(where: { $0.1.isPlaying }) ?? sorted.first else { return nil }
+        let lastUsed = lastUsedGroup?.id
+        guard let chosen = sorted.first(where: { $0.1.isPlaying }) ?? sorted.first(where: { $0.0.id == lastUsed }) ?? sorted.first
+        else { return nil }
         return (chosen.0, chosen.1)
     }
 
@@ -254,6 +283,9 @@ final class SonosController: ObservableObject {
             // The shown group stopping (its queue ran out, a stream dropped) still shows, paused,
             // so play goes back to it rather than to whatever player happens to be next.
             case "STOPPED" where group.id == activeGroup?.id: isPlaying = false
+            // Likewise the speakers last used here, until something else is shown: a launch
+            // with nothing playing starts on them.
+            case "STOPPED" where activeGroup == nil && group.id == lastUsedGroup?.id: isPlaying = false
             default: return nil
             }
             let positionXML = try await position
@@ -316,7 +348,9 @@ final class SonosController: ObservableObject {
             return await self.regroup(room, grouped, in: self.current(group, besides: room))
         }
         groupingTail = Task { _ = await edit.value }
-        return await edit.value
+        let coordinator = await edit.value
+        if let coordinator, let edited = groups.first(where: { $0.id == coordinator }) { remember(edited) }
+        return coordinator
     }
 
     /// `group` as the topology has it now. A hand-over changes its id, so failing that, the
@@ -501,7 +535,10 @@ final class SonosController: ObservableObject {
 
     // MARK: Controls
 
-    func play() async throws { try await transport("Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>") }
+    func play() async throws {
+        try await transport("Play", body: "<InstanceID>0</InstanceID><Speed>1</Speed>")
+        if let activeGroup { remember(current(activeGroup)) }
+    }
     func pause() async throws { try await transport("Pause", body: "<InstanceID>0</InstanceID>") }
     func next() async throws { try await transport("Next", body: "<InstanceID>0</InstanceID>") }
     func previous() async throws { try await transport("Previous", body: "<InstanceID>0</InstanceID>") }
